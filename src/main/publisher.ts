@@ -1,0 +1,282 @@
+/** 复用现有发布协议、分片和保留引擎；本地文件默认保留，显式开启后才定期清理。 */
+import { PublisherError, retryableError, retryDelay } from '../../vendor/publisher/src/integrations/plutofish/retry'
+import { basename, extname, join, resolve } from 'node:path'
+import { realpathSync } from 'node:fs'
+import type { PublicationState } from '../../vendor/publisher/src/integrations/plutofish/publication-state'
+import type { PublicationDraft } from '../../vendor/publisher/src/integrations/plutofish/publication-types'
+import { PublicationWorker } from '../../vendor/publisher/src/integrations/plutofish/publication-worker'
+import type { OSSFactory } from '../../vendor/publisher/src/integrations/plutofish/oss-upload'
+import { PlutoFishConnection } from '../../vendor/publisher/src/integrations/plutofish/connection'
+import { fingerprint } from '../../vendor/publisher/src/integrations/plutofish/upload-file'
+import type { WatchJob, WatchRoot } from '../shared/model'
+import { WatchStore } from './store'
+import { automaticReleaseKey, releaseKey, stableKey, targetKey } from './bindings'
+import { safeFile, sameSignature, within } from './files'
+import { validateRetention } from '../shared/retention'
+import { findProbe, probeFile } from './probe'
+import { watchVersionChoices } from './versions'
+import { matchMeasuredRelease, measuredReleaseVersion } from '../../vendor/publisher/src/integrations/plutofish/release-selection'
+import { tierHeight } from '../../vendor/publisher/src/lib/name'
+import { releaseSource, sourceReviewReason, normalizeRange } from '../../vendor/publisher/src/integrations/plutofish/release-specs'
+import { actualVersionSummary } from '../../vendor/publisher/src/lib/actual-version'
+
+export class WatchPublisher {
+  readonly worker: PublicationWorker
+  private preparing?: { jobId: string; abort: AbortController; promise: Promise<void> }
+  private closed = false
+  private fatalError = false
+  private timer?: ReturnType<typeof setInterval>
+  constructor(
+    private store: WatchStore, private connection: PlutoFishConnection, directory: string,
+    private changed: () => void, private fatal: (error: unknown) => void,
+    private retryOptions: { now?: () => number; baseMs?: number; maxMs?: number; factory?: OSSFactory } = {},
+  ) {
+    this.worker = new PublicationWorker(connection, draft => this.update(draft), {
+      directory: join(directory, 'publications'), factory: retryOptions.factory, manual: true, retention: {
+        now: retryOptions.now,
+        settings: () => {
+          const policy = validateRetention(this.store.data.retention)
+          return { hours: policy.enabled ? policy.days * 24 : 0 }
+        },
+        canDelete: state => this.canDelete(state),
+      },
+    })
+  }
+
+  start(): void {
+    // 发布清单可能先于监控记录落盘；启动先把未完成任务全部置为暂停，核对文件后再恢复。
+    const restored = this.worker.restored()
+    for (const draft of restored) {
+      const job = this.store.data.jobs.find(j => j.fileKey === draft.fileKey)
+      if (!job) {
+        if (draft.progress?.stage !== 'completed') this.worker.control(draft.fileKey, 'pause')
+        continue
+      }
+      if (job.changed || ['cancelled', 'failed'].includes(job.status)) continue
+      if (draft.progress?.stage !== 'completed') {
+        this.worker.control(draft.fileKey, 'pause')
+        job.status = job.manuallyPaused ? 'paused' : 'queued'
+      }
+    }
+    this.store.save()
+    this.timer = setInterval(() => { void this.tick().catch(this.fatal) }, 1000)
+  }
+
+  private update(draft: PublicationDraft): void {
+    const job = this.store.data.jobs.find(j => j.fileKey === draft.fileKey && !j.changed)
+    if (!job || !draft.progress) return
+    const progress = draft.progress
+    // 恢复与重试先核对文件；旧暂停/失败快照的同步回执不能吞掉待核对队列。
+    if (!job.preparationError && !(['paused', 'failed'].includes(progress.stage) && ['queued', 'preparing'].includes(job.status) && !job.manuallyPaused)) {
+      job.status = progress.stage as WatchJob['status']
+    }
+    job.percent = progress.uploadPercent; job.phase = progress.phase
+    job.synced = progress.synced
+    job.ed2k = draft.ed2k ? structuredClone(draft.ed2k) : undefined
+    job.ed2kSaved = draft.retention?.ed2kSaved ?? false
+    job.retention = draft.retention ? structuredClone(draft.retention) : undefined
+    job.error = job.preparationError || progress.error || (progress.stage === 'completed' && !progress.synced ? '上传完成，等待任务状态同步' : '')
+    if (!job.preparationError && progress.stage === 'failed' && job.status === 'failed') {
+      if (progress.failure?.retryable) this.scheduleRetry(job, progress.failure.retryAfterMs, progress.failure.id)
+      else delete job.retry
+    } else if (!job.preparationError && ['completed', 'cancelled'].includes(progress.stage)) delete job.retry
+    job.updatedAt = new Date().toISOString()
+    try { this.store.save(); this.changed() }
+    catch (error) {
+      this.fatalError = true
+      this.preparing?.abort.abort()
+      this.fatal(error)
+      throw error
+    }
+  }
+
+  private now(): number { return (this.retryOptions.now ?? Date.now)() }
+  private canDelete(state: PublicationState): boolean {
+    const job = this.store.data.jobs.find(j => j.fileKey === state.draft.fileKey)
+    const root = this.store.data.watches.find(w => w.id === job?.watchId)
+    if (!job || !root || !this.eligible(root) || job.status !== 'completed' || job.changed || job.manuallyPaused
+      || !job.synced || !job.ed2kSaved || job.path !== state.draft.output || !within(root.path, job.path)) return false
+    // 监控根目录或中间目录被改成链接时，不能沿旧路径清理其他目录里的文件。
+    try { return realpathSync(root.path) === root.path && realpathSync(job.path) === resolve(job.path) }
+    catch { return false }
+  }
+  private scheduleRetry(job: WatchJob, retryAfterMs = 0, failureId?: string): void {
+    if (job.manuallyPaused || job.changed || (failureId && job.retry?.failureId === failureId)) return
+    const attempt = (job.retry?.attempt ?? 0) + 1
+    job.retry = { attempt, failureId, nextAt: this.now() + Math.max(retryDelay(attempt, this.retryOptions.baseMs, this.retryOptions.maxMs), retryAfterMs) }
+  }
+
+  private eligible(root?: WatchRoot): boolean {
+    return !!root?.enabled && !this.store.data.uploadsPaused && this.connection.ready && !this.closed && !this.fatalError
+  }
+
+  async tick(): Promise<void> {
+    if (this.closed || this.fatalError || !this.connection.ready) return
+    await this.worker.tick()
+    for (const job of this.store.data.jobs) {
+      if (job.status === 'failed' && job.retry?.nextAt !== undefined && job.retry.nextAt <= this.now()
+        && !job.manuallyPaused && !job.changed && this.eligible(this.store.data.watches.find(w => w.id === job.watchId))) {
+        job.status = 'queued'; delete job.retry.nextAt
+      }
+    }
+    if (this.preparing || this.store.data.uploadsPaused) return
+    const job = this.store.data.jobs.find(j => j.status === 'queued' && this.eligible(this.store.data.watches.find(w => w.id === j.watchId)))
+    if (!job) return
+    const root = this.store.data.watches.find(w => w.id === job.watchId)!
+    const abort = new AbortController()
+    const promise = this.prepare(root, job, abort.signal).finally(() => { this.preparing = undefined })
+    this.preparing = { jobId: job.id, abort, promise }
+    await promise
+  }
+
+  private async prepare(root: WatchRoot, job: WatchJob, signal: AbortSignal): Promise<void> {
+    delete job.preparationError
+    job.status = 'preparing'; job.error = ''; this.store.save(); this.changed()
+    try {
+      this.connection.assertBinding(root.binding)
+      const before = await safeFile(root.path, job.path)
+      if (!sameSignature(before, job.signature)) throw new Error('文件已改变，等待目录重新扫描')
+      const measured = await probeFile(findProbe(this.store.data.ffprobe), job.path, before.size, signal)
+      if (!job.release || (!job.release.id && job.release.key)) {
+        if (root.versionMode === 'auto') {
+          const preset = job.sourceOverride ?? root.sourcePreset
+          const source = releaseSource(basename(job.path, extname(job.path)), preset)
+          const valid = matchMeasuredRelease([], measured.media, job.path, preset)
+          const version = job.release?.version ?? (valid.canCreate ? measuredReleaseVersion(measured.media, job.path, root.seasonNumber, preset) : undefined)
+          const key = job.release?.key ?? (version ? automaticReleaseKey(root, version) : undefined)
+          const catalog = await watchVersionChoices(this.connection, root, signal, key)
+          const choices = catalog.items.filter(row => row.status !== 'unpublished')
+          const match = matchMeasuredRelease(catalog.items, measured.media, job.path, preset)
+          const bound = catalog.match === 'binding' ? catalog.items.find(row => row.id === catalog.matchedId) : undefined
+          const selected = valid.canCreate && bound?.status !== 'unpublished'
+            ? bound ?? choices.find(row => row.id === match.matchedId) : undefined
+          // 下架绑定、同名但资料冲突的版本不能通过自动新建绕过。
+          const nameExists = version && catalog.items.some(row => row.name.toUpperCase() === version.name.toUpperCase())
+          if (!selected && (!match.canCreate || !version || !key || bound || nameExists)) {
+            job.versionReview = { reason: match.reason, detected: actualVersionSummary(measured), choices, source, sourceRequired: !!sourceReviewReason(source) }
+            if (bound || nameExists) job.versionReview.reason = '已有版本不可自动复用，请确认版本'
+            job.status = 'review'; job.error = job.versionReview.reason
+            return
+          }
+          signal.throwIfAborted()
+          job.release = selected ? { id: selected.id, name: selected.name, key, version }
+            : { name: version!.name, key: key!, version: version! }
+          // 新版本登记后查得目录 ID，将先前同键任务归一，避免跨目录/重命名绕过去重。
+          if (selected && key) for (const previous of this.store.data.jobs) {
+            const previousRoot = this.store.data.watches.find(w => w.id === previous.watchId)
+            if (previous.release?.key !== key || !previousRoot) continue
+            previous.release.id = selected.id
+            previous.targetKey = targetKey(previousRoot, previous.episodeNumber, selected.id)
+          }
+        } else job.release = { id: root.releaseId, name: root.releaseName, version: root.releaseVersion }
+        delete job.versionReview
+        this.store.save()
+      }
+      // 显式选择和旧固定版本也沿用已确认名称，不走下载器的 WEB-DL 回退命名。
+      job.release.version ??= { name: job.release.name, resolution: `${tierHeight(measured.media.width ?? 0, measured.media.height ?? 0)}p`, dynamicRange: normalizeRange(measured.media.dynamicRange) ?? 'Unknown' }
+      const releaseId = job.release.id
+      const releaseIdentity = releaseId ?? job.release.key!
+      const hash = await fingerprint(job.path, signal)
+      const after = await safeFile(root.path, job.path)
+      if (!sameSignature(before, after)) throw new Error('文件在检测期间改变，等待重新扫描')
+      signal.throwIfAborted()
+      if (!this.eligible(root) || job.status !== 'preparing') return
+      job.targetKey = targetKey(root, job.episodeNumber, releaseIdentity)
+      const key = job.fileKey ?? stableKey('gvs-f1', [root.binding.publisherId, job.targetKey, hash.sha1, hash.size, job.id])
+      // 相同目标、集号与完整内容重复出现时，只保留一个发布任务。
+      const sameTarget = (j: WatchJob) => {
+        const bound = this.store.data.watches.find(w => w.id === j.watchId)
+        const id = j.release?.id ?? j.release?.key ?? bound?.releaseId
+        return (j.targetKey ?? (bound && id ? targetKey(bound, j.episodeNumber, id) : undefined)) === job.targetKey
+      }
+      const other = this.store.data.jobs.find(j => j.id !== job.id && sameTarget(j) && j.sha1 === hash.sha1
+        && j.signature.size === hash.size && !j.changed && j.status !== 'cancelled')
+      if (other) {
+        const oldRoot = this.store.data.watches.find(w => w.id === other.watchId)
+        const available = oldRoot?.enabled && await safeFile(oldRoot.path, other.path).then(sig => sameSignature(sig, other.signature)).catch(() => false)
+        if (available) {
+          job.status = 'duplicate'; job.error = other.status === 'failed' ? '相同内容已有失败任务，请重试原任务' : '相同内容已处理或正在队列中'; job.sha1 = hash.sha1
+          job.duplicateOf = other.id; job.ed2k = other.ed2k; job.ed2kSaved = other.ed2kSaved
+          return
+        }
+      }
+      const conflict = this.store.data.jobs.find(j => j.id !== job.id && sameTarget(j)
+        && j.sha1 && j.sha1 !== hash.sha1 && !j.changed && !['cancelled', 'duplicate'].includes(j.status))
+      if (conflict) throw new Error('同一版本已有该集或电影的其他内容，请使用另一个版本绑定')
+      // 中断续传沿用原发布清单。新发现的成品先查服务端，覆盖其他客户端上传和本地记录丢失的情况。
+      if (!job.fileKey && releaseId) {
+        job.phase = 'checking'; this.changed()
+        const result = await this.connection.request<{ status: string; fileId?: string; ed2k?: string }>(root.binding, 'files/check', {
+          sourceAccount: root.binding.sourceAccount.alias, releaseId, episodeNumber: job.episodeNumber,
+          sha1: hash.sha1, sizeBytes: hash.size,
+        }, signal)
+        signal.throwIfAborted()
+        if (!sameSignature(await safeFile(root.path, job.path), before)) throw new Error('文件在查重期间改变，等待重新扫描')
+        if (!result || !['missing', 'existing', 'conflict'].includes(result.status)) throw new Error('PlutoFish 查重结果无效，已停止上传')
+        if (result.status === 'conflict') throw new Error('此版本的同一集或电影已有其他内容，请检查版本绑定')
+        if (result.status === 'existing') {
+          if (!result.fileId || !/^[a-f0-9]{32}$/.test(result.fileId)) throw new Error('PlutoFish 查重结果无效，已停止上传')
+          // 复用远端文件，但仍进入共享引擎完成 ED2K、任务登记及本地片段校验资格接续。
+          job.reused = true; job.duplicateOf = result.fileId
+        }
+      }
+      job.fileKey = key; job.sha1 = hash.sha1
+      this.store.save()
+      const draft: PublicationDraft = {
+        schemaVersion: 1, binding: root.binding, releaseKey: job.release.key ?? releaseKey(root, releaseId), fileKey: key, existingReleaseId: releaseId,
+        version: job.release.version,
+        workTarget: root.work, title: root.title, categoryLabel: root.work.category, kind: 'video',
+        directoryId: root.directoryId, directoryPath: root.directoryPath, seasonNumber: root.seasonNumber,
+        episodeNumber: job.episodeNumber, output: job.path, measured, updatedAt: new Date().toISOString(),
+      }
+      this.worker.register(draft)
+      this.worker.control(key, 'resume')
+      this.worker.event(draft, { id: 0, status: '本地文件已就绪', pct: 1, log: '', err: '', done: true, completedMedia: measured })
+    } catch (error) {
+      if (!signal.aborted && job.status === 'preparing') {
+        job.status = 'failed'
+        if (retryableError(error)) this.scheduleRetry(job, error instanceof PublisherError ? error.retryAfterMs : undefined)
+        else delete job.retry
+        job.error = error instanceof Error && /[\u4e00-\u9fff]/.test(error.message) ? error.message : '本地文件处理失败，请检查目录权限后重试'
+        if (job.fileKey) job.preparationError = job.error
+      }
+    } finally {
+      if (job.phase === 'checking') job.phase = undefined
+      job.updatedAt = new Date().toISOString()
+      this.store.save(); this.changed()
+    }
+  }
+
+  async stopJob(job: WatchJob, action: 'pause' | 'cancel'): Promise<void> {
+    if (this.preparing?.jobId === job.id) {
+      this.preparing.abort.abort()
+      await this.preparing.promise
+    }
+    if (job.fileKey) await this.worker.stop(job.fileKey, action)
+  }
+
+  async pause(rootId?: string): Promise<void> {
+    for (const job of this.store.data.jobs.filter(j => !rootId || j.watchId === rootId)) {
+      if (['processing', 'uploading', 'preparing'].includes(job.status)) {
+        await this.stopJob(job, 'pause')
+        job.status = 'paused'
+      }
+    }
+    this.store.save()
+  }
+
+  resume(rootId?: string): void {
+    for (const job of this.store.data.jobs) {
+      if ((!rootId || job.watchId === rootId) && job.status === 'paused' && !job.manuallyPaused && !job.changed && this.eligible(this.store.data.watches.find(w => w.id === job.watchId))) job.status = 'queued'
+    }
+    this.store.save()
+  }
+
+  async close(): Promise<void> {
+    this.closed = true
+    if (this.timer) clearInterval(this.timer)
+    this.preparing?.abort.abort()
+    await this.preparing?.promise
+    await this.worker.close()
+  }
+}
