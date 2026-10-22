@@ -15,6 +15,18 @@ export const normalizeRange = (value = '') => ({ SDR: 'SDR', HDR: 'HDR10', HDR10
 export const videoCodec = (value = '') => ({ H264: 'AVC', X264: 'AVC', AVC: 'AVC', H265: 'HEVC', X265: 'HEVC', HEVC: 'HEVC', AV1: 'AV1', VP9: 'VP9' } as Record<string, string>)[value.toUpperCase().replace('.', '')]
 export const audioCodec = (value = '') => ({ AAC: 'AAC', AC3: 'DD', DD: 'DD', EAC3: 'DDP', 'E-AC3': 'DDP', DDP: 'DDP', DCA: 'DTS', DTS: 'DTS', TRUEHD: 'TRUEHD', MLP: 'TRUEHD', FLAC: 'FLAC' } as Record<string, string>)[value.toUpperCase()]
 
+/** 只在技术规格之后识别制作组，保留大小写、点号和横线；技术标签里的横线不是组名边界。 */
+export function splitReleaseGroup(name: string): { specs: string; group: string } {
+  const resolution = [...name.matchAll(/(?:^|[. _])(\d{3,4}p)(?=[. _-]|$)/gi)].at(-1)
+  const marker = /(?:^|[. _])(WEB[ ._-]?(?:DL|RIP)|BLU[ ._-]?RAY|REMUX|HDTV|DVD|AVC|HEVC|H\.?26[45]|X26[45]|AV1|VP9)(?=[. _-]|$)/i.exec(name)
+  const start = resolution?.index ?? marker?.index
+  if (start === undefined) return { specs: name, group: '' }
+  const technical = name.slice(start).replace(/WEB[ ._-]?(?:DL|RIP)|BLU-RAY|DTS-(?:HD|X)|E-?AC-?3|AC-3/gi, tag => tag.replace(/-/g, '.'))
+  const dash = technical.indexOf('-')
+  if (dash < 0 || !name.slice(start + dash + 1).trim()) return { specs: name, group: '' }
+  return { specs: name.slice(0, start + dash), group: name.slice(start + dash + 1).trim() }
+}
+
 function normalize(name: string) {
   return name.toUpperCase().replace(/H\.?264|X264/g, 'AVC').replace(/H\.?265|X265/g, 'HEVC')
     .replace(/WEB[ ._-]?DL/g, 'WEB-DL').replace(/WEB[ ._-]?RIP/g, 'WEBRIP').replace(/BLU[ ._-]?RAY/g, 'BLURAY')
@@ -22,10 +34,11 @@ function normalize(name: string) {
     .replace(/[ _\[\]()]+/g, '.').replace(/^\.+|\.+$/g, '')
 }
 function technical(name: string) {
-  const text = normalize(name)
+  const { specs, group } = splitReleaseGroup(name)
+  const text = normalize(specs)
   const resolution = [...text.matchAll(/(?:^|\.)(\d{3,4})P(?=\.|$)/g)].at(-1)
   const tail = resolution ? text.slice(resolution.index! + resolution[0].length).replace(/^\./, '') : text
-  return { resolution, text, tail: tail.replace(/WEB-DL/g, 'WEBDL').replace(/-[A-Z0-9][A-Z0-9.-]*$/, '').replace(/WEBDL/g, 'WEB-DL') }
+  return { resolution, text, tail, group }
 }
 
 /** 文件中的明确声明优先；预设只补缺失字段，绝不隐式推断 WEB-DL。 */
@@ -50,7 +63,7 @@ export function sourceReviewReason(source: ReleaseSource): string {
 }
 
 export function parseReleaseSpecs(name: string, fallbackHeight?: number) {
-  const { tail, resolution } = technical(name)
+  const { tail, resolution, group } = technical(name)
   const marker = /(?:^|\.)(WEB-DL|WEBRIP|BLURAY|HDTV|DVD|REMUX)(?=\.|$)/.exec(tail)
   if (!resolution && (!fallbackHeight || !marker)) return null
   // 无分辨率的文件仍可保留来源标记之后的技术信息；片名不进入特殊规格。
@@ -68,7 +81,7 @@ export function parseReleaseSpecs(name: string, fallbackHeight?: number) {
     /(?:^|\.)(\d+(?:\.\d+)?)FPS(?=\.|$)/g,
   ]) rest = rest.replace(pattern, '.')
   const extras = rest.split('.').filter(t => t && !(source.type === 'REMUX' && t === 'REMUX')).sort().join('.')
-  return { height: resolution ? Number(resolution[1]) : fallbackHeight!, codec, ...source, audio: audio ? audioCodec(audio[1]) : undefined,
+  return { height: resolution ? Number(resolution[1]) : fallbackHeight!, codec, ...source, group, audio: audio ? audioCodec(audio[1]) : undefined,
     channels: audio?.[2] ? Number(audio[2]) + Number(audio[3]) : undefined,
     range: dynamic ? normalizeRange(dynamic) : undefined, rangeTag: dynamic, fps: fps ? Math.round(Number(fps)) : undefined, extras }
 }
@@ -81,7 +94,8 @@ export function matchingReleases(items: ReleaseOption[], name: string): ReleaseO
     if (row.status === 'unpublished') return false
     const actual = parseReleaseSpecs(row.name)
     if (!actual || actual.height !== expected.height || actual.codec !== expected.codec || actual.platform !== expected.platform
-      || actual.type !== expected.type || actual.extras !== expected.extras || actual.fps !== expected.fps) return false
+      || actual.type !== expected.type || actual.extras !== expected.extras || actual.fps !== expected.fps
+      || actual.group.toUpperCase() !== expected.group.toUpperCase()) return false
     const resolution = /^(\d{3,4})p$/i.exec(row.resolution.trim())
     if (resolution && Number(resolution[1]) !== expected.height) return false
     const range = normalizeRange(row.dynamicRange) ?? actual.range ?? 'SDR'

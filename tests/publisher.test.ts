@@ -453,6 +453,33 @@ test('无匹配自动新建；后续集数跨目录复用，改名重复仍跳�
   expect(new WatchStore(f.store.path).data.jobs.find(j => j.id === next.id)?.release?.id).toBe(next.release?.id)
 })
 
+test('自动上报保留完整制作组，同组续集复用，不同组和无组版本不混用', async () => {
+  const f = await setup({ releases: () => releasePage([automaticOptions()[0]]) })
+  f.root.versionMode = 'auto'; f.root.releaseId = ''
+  const groups = ['Team.Web-Release', 'Team.Web-Release', '制作组']
+  const jobs: WatchJob[] = []
+  for (const [index, group] of groups.entries()) {
+    const name = `Show.S01E0${index + 1}.720p.WEB.WEB-DL.AVC-${group}.mp4`
+    const path = join(f.root.path, name)
+    sampleVideo(path, '1280x720')
+    const job: WatchJob = { ...f.job, id: `group-${index}`, path, relativePath: name, episodeNumber: index + 1,
+      status: 'queued', fileKey: undefined, sha1: undefined, release: undefined, targetKey: undefined,
+      signature: await safeFile(f.root.path, path) }
+    if (index === 0) f.store.data.jobs = []
+    f.store.data.jobs.push(job); jobs.push(job)
+    await until(f.publisher, () => job.status === 'completed')
+    const report = f.calls.filter(c => c.path === 'files/report').at(-1)!.body
+    expect(report.releaseTarget.name).toBe(`S01.720p.WEB.WEB-DL.SDR.AVC-${group}`)
+    expect(job.release?.id).not.toBe('a'.repeat(32))
+  }
+  expect(f.createdReleases.size).toBe(2)
+  expect(jobs[0].release?.id).toBe(jobs[1].release?.id)
+  expect(jobs[0].release?.key).toBe(jobs[1].release?.key)
+  expect(jobs[2].release?.id).not.toBe(jobs[0].release?.id)
+  expect(jobs[2].release?.key).not.toBe(jobs[0].release?.key)
+  expect(new WatchStore(f.store.path).data.jobs[2].release).toEqual(jobs[2].release)
+})
+
 test('新版本等待上传时重启、并发发现和不同画质不会产生重复版本', async () => {
   const f = await setup({ releases: () => releasePage([]) })
   f.root.versionMode = 'auto'; f.root.releaseId = ''

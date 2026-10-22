@@ -40,7 +40,7 @@ export type PublicationDraft = {
   ed2k?: ED2KProgress
   retention?: RetentionProgress
   categoryLabel: string
-  /** 固定平台标签和发布组，便于从最终文件名中准确剥离发布组。旧队列可省略。 */
+  /** 固定平台标签和制作组，用于版本命名及简短文件名的回退。旧队列可省略。 */
   naming?: { source: string; group: string }
   title: string
   seasonNumber?: number

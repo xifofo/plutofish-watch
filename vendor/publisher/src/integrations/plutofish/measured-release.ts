@@ -28,7 +28,7 @@ export function matchMeasuredRelease(items: ReleaseOption[], media: MediaSpecs, 
     : { canCreate: matches.length === 0, reason: matches.length > 1 ? '多个版本规格相同，请选择一次' : '未匹配到已有版本' }
 }
 
-/** 自动新建采用实际音视频规格，保留文件名中的来源及特殊标签；分集名和发布组不进入版本。 */
+/** 自动新建采用实际音视频规格，保留文件名中的来源、特殊标签及制作组；分集名不进入版本。 */
 export function measuredReleaseVersion(media: MediaSpecs, path: string, season?: number, preset: ReleaseSource = {}) {
   const checked = matchMeasuredRelease([], media, path, preset)
   if (!checked.canCreate) throw new Error(checked.reason)
@@ -50,5 +50,5 @@ function buildVersion(media: MediaSpecs, path: string, season?: number, preset: 
     ...tags,
     file?.extras.split('.').includes('ATMOS') && !media.audio?.atmos ? 'Atmos' : '',
   ]
-  return { name: parts.filter(Boolean).join('.'), resolution, dynamicRange }
+  return { name: parts.filter(Boolean).join('.') + (file?.group ? `-${file.group}` : ''), resolution, dynamicRange }
 }
