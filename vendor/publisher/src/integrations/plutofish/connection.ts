@@ -96,7 +96,7 @@ export class PlutoFishConnection {
   }
 
   /** 只有固定绑定相符的请求可发出；密钥不经过渲染进程或任务清单。 */
-  async request<T>(binding: PublicationDraft['binding'], path: 'tmdb/search' | 'releases/query' | 'tasks/report' | 'uploads/prepare' | 'files/check' | 'files/report' | 'files/ed2k' | 'directories' | 'directories/create' | 'range-proofs/pending' | 'range-proofs/report' | 'range-proofs/forget', body: unknown, signal?: AbortSignal): Promise<T> {
+  async request<T>(binding: PublicationDraft['binding'], path: 'tmdb/recognize' | 'tmdb/search' | 'releases/query' | 'tasks/report' | 'uploads/prepare' | 'files/check' | 'files/report' | 'files/ed2k' | 'directories' | 'directories/create' | 'range-proofs/pending' | 'range-proofs/report' | 'range-proofs/forget', body: unknown, signal?: AbortSignal): Promise<T> {
     this.assertBinding(binding)
     const key = this.saved.key
     const requestSignal = AbortSignal.any([this.requestAbort.signal, ...(signal ? [signal] : [])])
@@ -120,7 +120,7 @@ export class PlutoFishConnection {
     if (!response.ok) {
       const failure = await response.json().catch(() => null) as { error?: { code?: string; fieldErrors?: Record<string, unknown> } } | null
       requestSignal.throwIfAborted()
-      if (response.status === 422 && path !== 'tmdb/search') {
+      if (response.status === 422 && path !== 'tmdb/search' && path !== 'tmdb/recognize') {
         // 只展示固定字段名和业务提示，绝不把服务端正文、字段值或供应商凭据带入界面。
         const labels: Record<string, string> = {
           title: '作品或集标题', episodeTitle: '集标题', episodeNumber: '集号', seasonNumber: '季号',
@@ -139,6 +139,16 @@ export class PlutoFishConnection {
         const reason = reasons[failure?.error?.code ?? ''] || (names ? `${names}校验未通过` : '提交的数据未通过校验，请检查目录绑定与任务信息')
         const action = path === 'tasks/report' ? '任务上报' : path === 'files/report' ? '资源登记' : path === 'uploads/prepare' ? '上传调度' : path === 'releases/query' ? '版本查询' : '请求'
         throw new PublisherError(`PlutoFish ${action}失败：${reason}（HTTP 422）`)
+      }
+      if (path === 'tmdb/recognize' && response.status !== 401 && response.status !== 403) {
+        const messages: Record<string, string> = {
+          TMDB_KEY_MISSING: '请先在 PlutoFish 后台配置 TMDB API Key',
+          TMDB_CATEGORY_RULES_INVALID: '请在后台修正影视分类规则',
+          TMDB_RECOGNITION_TIMEOUT: '文件名识别超时，可重试或手动填写',
+          TMDB_RECOGNITION_FAILED: 'TMDB 识别请求失败，请检查后台密钥与网络',
+        }
+        if (response.status === 404) throw new Error('当前 PlutoFish 服务尚不支持文件名识别，请更新服务端或手动填写')
+        throw new Error(messages[failure?.error?.code ?? ''] ?? '文件名识别失败，请检查文件名或继续手动填写')
       }
       if (path === 'tmdb/search' && response.status !== 401 && response.status !== 403) {
         if (failure?.error?.code === 'TMDB_KEY_MISSING') throw new Error('请先在 PlutoFish 后台配置 TMDB API Key')

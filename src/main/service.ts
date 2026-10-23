@@ -16,6 +16,7 @@ import { WatchPublisher } from './publisher'
 import { findProbe, probeAvailable } from './probe'
 import { WatchConnection, validateWatchedFile } from './connection'
 import { searchWorks } from './work-search'
+import { recognitionSample, recognizeFile } from './recognition'
 import { applyWatchEdit } from './watch-edit'
 import type { RetentionOptions } from '../../vendor/publisher/src/integrations/plutofish/publication-retention'
 
@@ -99,6 +100,15 @@ export class WatchService {
   async searchWorks(input: Parameters<WatchAPI['searchWorks']>[0]) {
     const binding = bindingFor(this.connection.view(), input?.sourceAccountId)
     return searchWorks(this.connection, binding, input)
+  }
+
+  async recognitionSample(path: string) {
+    return recognitionSample(path)
+  }
+
+  async recognizeFile(input: Parameters<WatchAPI['recognizeFile']>[0]) {
+    const binding = bindingFor(this.connection.view(), input?.sourceAccountId)
+    return recognizeFile(this.connection, binding, input?.fileName)
   }
 
   async releases(input: Parameters<WatchAPI['releases']>[0]) {

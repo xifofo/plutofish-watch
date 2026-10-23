@@ -11,6 +11,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const vendor = join(root, 'vendor/publisher')
 const lockPath = join(vendor, 'source-lock.json')
 const entries = [
+  'src/integrations/plutofish/recognition.ts',
   'src/integrations/plutofish/publication-worker.ts',
   'src/integrations/plutofish/release-selection.ts',
   'src/lib/ed2k.ts',

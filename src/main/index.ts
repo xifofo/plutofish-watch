@@ -66,6 +66,8 @@ else {
             case 'connect': await svc.connect(payload); break
             case 'releases': value = await svc.releases(payload); break
             case 'searchWorks': value = await svc.searchWorks(payload); break
+            case 'recognitionSample': value = await svc.recognitionSample(payload); break
+            case 'recognizeFile': value = await svc.recognizeFile(payload); break
             case 'directories': value = await svc.connection.directories(payload.sourceAccountId, payload.directoryId, payload.cursor); break
             case 'add': await svc.add(payload); break
             case 'updateWatch': await svc.updateWatch(payload); break
@@ -103,7 +105,7 @@ else {
           return { ok: false, error: error instanceof Error && /[\u4e00-\u9fff]/.test(error.message) ? error.message : '操作失败，请检查输入、网络或本地目录权限' }
         }
       }
-      if (['snapshot', 'searchWorks', 'releases', 'directories'].includes(action)) return run()
+      if (['snapshot', 'searchWorks', 'recognitionSample', 'recognizeFile', 'releases', 'directories'].includes(action)) return run()
       if (action === 'connect') service!.connection.cancelRequests()
       const result = commands.then(run, run)
       commands = result.then(() => {})

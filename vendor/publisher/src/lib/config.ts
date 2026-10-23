@@ -30,6 +30,8 @@ export type FileConfig = {
   tencentNativeEventMode?: 'off' | 'preview' | 'send'
   /** off=disabled; fixture=phone-free local templates; file=external JSONL producer (research/phone). */
   tencentNativeEventCollect?: 'off' | 'fixture' | 'file'
+  /** Crunchyroll：调用方自持的 refresh_token（网关不落盘；play/manifest/license 逐次携带）。 */
+  crunchyrollToken?: string
   /** Hami Web and TV are separate gateway sessions. */
   hamiClient?: 'tv' | 'web'
   tencentTVDevice?: string

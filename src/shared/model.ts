@@ -15,6 +15,10 @@ export type Binding = {
 }
 export type Work = { mediaType: 'movie' | 'tv'; tmdbId: string; category: string }
 export type WorkOption = { tmdbId: string; title: string; originalTitle: string; year?: number }
+/** 识别只产生草稿，目录保存后不再根据后续文件重新绑定。 */
+export type { CategoryMatch, RecognizedWork, Recognition } from '../../vendor/publisher/src/integrations/plutofish/recognition-types'
+import type { Recognition } from '../../vendor/publisher/src/integrations/plutofish/recognition-types'
+export type RecognitionSample = { directoryName: string; fileName: string | null; truncated: boolean }
 export type WorkSearch = { sourceAccountId: string; mediaType: Work['mediaType']; query: string; page: number }
 export type WorkPage = { items: WorkOption[]; page: number; totalPages: number; total: number }
 export type Release = { id: string; name: string; resolution: string; dynamicRange: string; status: string; latestEpisode?: number }
@@ -82,6 +86,8 @@ export interface WatchAPI {
   chooseDirectory(): Promise<string | null>
   chooseProbe(): Promise<string | null>
   searchWorks(input: WorkSearch): Promise<WorkPage>
+  recognitionSample(path: string): Promise<RecognitionSample>
+  recognizeFile(input: { sourceAccountId: string; fileName: string }): Promise<Recognition>
   releases(input: Omit<WatchInput, 'path' | 'includeExisting' | 'stableSeconds' | 'releaseId'>): Promise<Release[]>
   directories(input: { sourceAccountId: string; directoryId: string; cursor?: string }): Promise<DirectoryPage>
   add(input: WatchInput): Promise<void>

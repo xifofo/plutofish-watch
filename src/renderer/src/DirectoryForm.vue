@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue'
-import type { Snapshot, WatchInput, WatchRoot, Release, DirectoryPage } from '../../shared/model'
+import type { Snapshot, WatchInput, WatchRoot, Release, DirectoryPage, Recognition } from '../../shared/model'
 import Icon from './Icon.vue'
 import WorkPicker from './WorkPicker.vue'
 import SourceFields from './SourceFields.vue'
+import DirectoryRecognition from './DirectoryRecognition.vue'
 
 const props = defineProps<{ state: Snapshot; busy: boolean; initial?: WatchRoot }>()
 const emit = defineEmits<{ save: [input: WatchInput]; back: [] }>()
@@ -13,6 +14,23 @@ const form = reactive<WatchInput>(props.initial ? JSON.parse(JSON.stringify({ ..
   versionMode: 'auto', releaseId: '', directoryId: '0', directoryPath: '/', includeExisting: true, stableSeconds: 30,
 })
 const choices = ref<Release[]>([]), loading = ref(false), error = ref(''), queried = ref(false)
+const recognitionPending = ref(false), pickerGeneration = ref(0), lastRecognitionDraft = ref('')
+const recognizedCategory = ref<{ value: string; label: string }>()
+const draftKey = computed(() => JSON.stringify([form.work, form.title, form.seasonNumber]))
+const categories = computed(() => {
+  const items = props.state.connection.identity?.categories ?? []
+  return recognizedCategory.value && !items.some(c => c.value === recognizedCategory.value!.value) ? [...items, recognizedCategory.value] : items
+})
+
+/** 只消费可安全回填的结果；重建作品选择器以避免旧类型监听清除新草稿。 */
+function applyRecognition(result: Recognition) {
+  if (props.busy || !result.canAutoFill || !result.workTarget || !result.work) return
+  form.work = { ...result.workTarget }; form.title = result.work.title
+  form.seasonNumber = result.work.mediaType === 'tv' ? result.parsed.seasonNumber : undefined
+  recognizedCategory.value = { value: result.workTarget.category, label: result.work.category.label }
+  pickerGeneration.value++
+  lastRecognitionDraft.value = draftKey.value
+}
 if (props.initial && form.versionMode === 'fixed') {
   choices.value = [{ id: form.releaseId, name: props.initial.releaseName,
     resolution: props.initial.releaseVersion?.resolution ?? '', dynamicRange: props.initial.releaseVersion?.dynamicRange ?? '', status: 'published' }]
@@ -60,6 +78,7 @@ function selectCloud() {
   showCloud.value = false
 }
 function submit() {
+  if (recognitionPending.value) return
   emit('save', JSON.parse(JSON.stringify({ ...form, seasonNumber: form.work.mediaType === 'tv' ? form.seasonNumber : undefined })))
 }
 </script>
@@ -78,13 +97,14 @@ function submit() {
       </section>
       <section class="panel form-section">
         <div class="section-label"><span class="step">2</span><div><h2>作品与版本</h2></div></div>
+        <DirectoryRecognition v-if="!initial" :path="form.path" :source-account-id="form.sourceAccountId" :connection-key="`${state.connection.url}:${state.connection.identity?.id ?? ''}`" :draft-key="draftKey" :can-replace="(!form.title && !form.work.tmdbId) || lastRecognitionDraft === draftKey" :disabled="busy || loading" @pending="recognitionPending = $event" @apply="applyRecognition" />
         <div class="form-grid">
-          <label>资源分类<select v-model="form.work.category" required><option v-for="c in state.connection.identity?.categories" :key="c.value" :value="c.value">{{ c.label }}</option></select></label>
+          <label>资源分类<select v-model="form.work.category" required><option v-for="c in categories" :key="c.value" :value="c.value">{{ c.label }}</option></select></label>
           <label>作品类型<select v-model="form.work.mediaType"><option value="tv">剧集</option><option value="movie">电影</option></select></label>
           <label v-if="form.work.mediaType === 'tv'">季号<input v-model.number="form.seasonNumber" type="number" min="0" max="10000" required /></label>
           <label>上传源账号<select v-model="form.sourceAccountId" required><option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }} · {{ s.alias }}</option></select></label>
         </div>
-        <WorkPicker v-model:title="form.title" v-model:tmdb-id="form.work.tmdbId" :media-type="form.work.mediaType" :source-account-id="form.sourceAccountId" @select="selectedWork" />
+        <WorkPicker :key="pickerGeneration" v-model:title="form.title" v-model:tmdb-id="form.work.tmdbId" :media-type="form.work.mediaType" :source-account-id="form.sourceAccountId" @select="selectedWork" />
         <div class="version-mode"><label>版本归类<select v-model="form.versionMode" aria-label="版本归类"><option value="auto">自动归类</option><option value="fixed">固定版本</option></select></label></div>
         <template v-if="form.versionMode === 'auto'"><p class="hint">匹配已有版本，无匹配时自动新增；来源不明待确认。</p><details class="help-details"><summary>目录来源预设</summary><SourceFields v-model="form.sourcePreset" /><p class="hint">文件名优先，预设补缺。网络片源需平台；光盘来源可留空。</p></details></template>
         <div v-else class="input-action version-row"><label>固定版本<select v-model="form.releaseId" required><option value="" disabled>{{ queried ? '请选择已有版本' : '先查询作品的已有版本' }}</option><option v-for="r in choices" :key="r.id" :value="r.id">{{ r.name }}{{ r.latestEpisode !== undefined ? ` · 更新至 ${r.latestEpisode} 集` : '' }}</option></select></label>
@@ -104,7 +124,7 @@ function submit() {
           <div class="form-footer"><button type="button" class="button secondary" @click="showCloud = false">关闭</button><button type="button" class="button primary" @click="selectCloud">选用当前目录</button></div>
         </div>
       </section>
-      <div class="form-footer"><span class="hint">{{ initial ? '保存后保留目录原来的监控或暂停状态' : '自动上传 · 保留原文件' }}</span><button class="button primary" type="submit" :disabled="!form.work.tmdbId || !form.title || (form.versionMode !== 'auto' && !form.releaseId)"><Icon :name="initial ? 'check' : 'plus'" :size="18" />{{ busy ? '正在保存…' : initial ? '保存修改' : '创建并开始监控' }}</button></div>
+      <div class="form-footer"><span class="hint">{{ initial ? '保存后保留目录原来的监控或暂停状态' : '自动上传 · 保留原文件' }}</span><button class="button primary" type="submit" :disabled="recognitionPending || !form.work.tmdbId || !form.title || (form.versionMode !== 'auto' && !form.releaseId)"><Icon :name="initial ? 'check' : 'plus'" :size="18" />{{ busy ? '正在保存…' : initial ? '保存修改' : '创建并开始监控' }}</button></div>
     </fieldset>
   </form>
 </template>
