@@ -54,16 +54,20 @@ Intel Mac 构建使用 `--x64`，对应应用目录通常为 `release/mac/`。�
 
 ### 生成安装包
 
-先执行 `pnpm install --frozen-lockfile` 和 `pnpm build`，再在对应操作系统的构建环境中运行：
+先执行 `pnpm install --frozen-lockfile` 和 `pnpm build`，再运行对应打包命令。macOS 包在 macOS 构建；Windows x64 包也支持在 Apple Silicon Mac 上交叉构建：
 
 | 目标平台 | 打包命令 | 安装方式 |
 | --- | --- | --- |
 | macOS Apple Silicon | `pnpm exec electron-builder --mac dmg --arm64 --publish never` | 打开 `release/` 中的 `.dmg`，把应用拖入“应用程序” |
 | macOS Intel | `pnpm exec electron-builder --mac dmg --x64 --publish never` | 同上 |
-| Windows x64 | `pnpm exec electron-builder --win nsis --x64 --publish never` | 运行 `release/` 中的安装程序 `.exe` |
+| Windows x64 | `pnpm run pack:win:x64` | 运行 `release/PlutoFish-Watch-<版本>-windows-x64-setup.exe` |
 | Linux x64 | `pnpm exec electron-builder --linux AppImage --x64 --publish never` | 为 `release/` 中的 `.AppImage` 添加执行权限后运行 |
 
-`pnpm run pack` 只生成可运行的应用目录；上表命令生成安装包，并明确禁止自动发布。当前已验收 macOS arm64 应用目录；DMG、Windows、Linux 安装包仍需在相应环境构建和验证。Linux 保存凭据还需要可用的系统密钥环。
+`pnpm run pack` 只生成可运行的应用目录；上表命令生成安装包，并明确禁止自动发布。当前已验收 macOS arm64 应用目录；Windows x64 已完成安装包构建和内容校验，仍需在 Windows 上验证安装、启动与运行；DMG、Linux 安装包仍需构建和验证。Linux 保存凭据还需要可用的系统密钥环。
+
+Windows 包面向 Intel/AMD 64 位系统（x64）；当前 Electron 运行时不提供 32 位 x86 包。`pack:win:x64` 会先构建源码，再生成包含版本号与架构的 NSIS 安装程序；不捆绑 ffprobe，也不会自动上传 GitHub Release。
+
+构建配置固定使用 `toolsets.nsis: 1.2.1`，包含 Apple Silicon 原生编译器，避免旧默认工具需要 Intel Mac 运行环境。未配置 Windows 代码签名证书时生成的安装包不带数字签名。
 
 ### 首次运行、升级与恢复
 
@@ -115,6 +119,7 @@ Intel Mac 构建使用 `--x64`，对应应用目录通常为 `release/mac/`。�
 - 复用文件仍走公共发布流程：登记任务、核验、资源回执、计算并补记 ED2K，以及接收服务端的片段校验通知。ED2K 状态显示在任务中，可展开复制链接；已上传与 ED2K 已同步分别展示。监控器保持运行且原文件可读时，可接替已关闭的下载器提供本地校验。
 - 文件被替换或移走时停止旧的未完成任务。挂载或子目录不可访问时保留已有记录，不把一次扫描失败当作整批删除。
 - 断网、连接超时或临时服务故障后自动重新验证连接，按 5、10、20、40、60 秒间隔重连，持续至恢复；健康连接每分钟复核一次。离线启动和电脑唤醒后同样适用，无需重新输入已保存的凭据。
+- 版本查询、网盘浏览和目录保存遇到慢请求时，仍可在“连接与设置”重新验证连接；重连会取消旧请求，避免等待旧请求超时。自动恢复提示也会显示在添加目录页面；取消的目录保存需要手动再次提交。
 - 临时网络故障、限流和服务暂不可用导致的上传失败自动重试：从 5 秒开始递增，最长间隔 5 分钟；服务端指定 `Retry-After` 时至少等待该时长。重试次数、下次时间和分片检查点落盘，重启后继续原任务。界面显示下次时间，可“立即重试”或暂停。
 - 凭据失效、权限撤销、文件改变或丢失、版本与内容冲突等需人工处理，不无限重试。修正凭据后重新连接；修正任务后点击“重试”。升级前遗留的失败记录没有结构化错误信息，需手动重试一次才能进入新的自动恢复流程。
 - 暂停目录会停止该目录的发现与上传，恢复后补扫；“暂停上传”保留目录发现。网络恢复不会解除目录暂停、全局上传暂停或手动任务暂停，已取消任务不会复活。
@@ -159,12 +164,15 @@ macOS 实际窗口验收：
 ```sh
 env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui-smoke.cjs
 env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui-recovery-smoke.cjs
+env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui-connection-smoke.cjs
 env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui-retention-smoke.cjs
 ```
 
 此验收启动真实 Electron 窗口、使用独立的临时数据与本机假服务，覆盖连接、作品搜索、固定版本与自动归类、无匹配自动新增及后续集数复用、不同画质分流、人工确认版本及过期选择拒绝、移入多层子目录、手动确认集号、历史补传、重复跳过、ED2K 同步、完成登记、暂停恢复、窄窗口和深色模式。截图放在忽略目录 `.smoke/`，临时凭据和视频在退出时清理。
 
 恢复验收另外模拟套接字断开、回执 503、凭据撤销，检查自动重连、自动重试、暂停边界以及完成后的 ED2K 和任务状态同步。分片续传与重启恢复由离线测试覆盖，所有网盘操作均为本机模拟。
+
+连接验收专门覆盖版本查询、网盘浏览和作品搜索断线后的自动恢复、慢查询期间的操作，以及保存目录时立即重新连接。源码回归另外覆盖 IPv4/IPv6 聚合网络错误、旧请求取消和定时校验不打断正常读取。
 
 清理验收使用假时钟和临时视频，检查设置默认关闭、保存与校验、保留时间、暂停与关闭开关、到期删除及服务端通知；仅删除测试创建的临时文件，不读取正式运行数据。
 

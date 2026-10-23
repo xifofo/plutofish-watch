@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "https://github.com/xifofo/gvs-tui",
-  "baseRevision": "1b90ba02e38ed5557a9272c49358f89a604978f1",
+  "baseRevision": "3f4fd832ce47bd214ec765f414158a0a40bb76cb",
   "includesUncommittedChanges": false,
   "modifiedFiles": [],
   "entries": [
@@ -12,7 +12,7 @@
   "files": {
     "src/integrations/plutofish/client.ts": "b90568fb89ac2837b53ed2fe170e31cb328e50cfc95204deab6bd8234be82f9f",
     "src/integrations/plutofish/config.ts": "4bac3782b62b09eb4e7a25a36085e47e909575d26df5f35410897bbd1094feb3",
-    "src/integrations/plutofish/connection.ts": "9f560caef1383887e07e4a975891ff5d02333d5ca986c6463363babc01a56a75",
+    "src/integrations/plutofish/connection.ts": "18f672ad38a4bc406f51355c8340b4ea62860d5c0728edd5362d5ab44cab2b31",
     "src/integrations/plutofish/measured-release.ts": "0de038856def3a59e16bc04a3b3871e8615c1c35c4069f95f4c92e30c44d2def",
     "src/integrations/plutofish/oss-upload.ts": "e73f6d66ebde1eb23a68d66615e4970d435cd6e77e4cc1a28bfb9d8205f0c41f",
     "src/integrations/plutofish/publication-cleanup.ts": "969db991e22d2dcc31273c5d633369c55aa2128e0afc77fd03582e215148eaa7",
@@ -26,7 +26,7 @@
     "src/integrations/plutofish/release-selection.ts": "53a543e2ea3847c51aa6cf7918e9675dbc792aa965c406566f5a880956e089d3",
     "src/integrations/plutofish/release-specs.ts": "0bd8de991935da2f736e7d8bb9f8059fbd8286b0b2d114f8f64154fda2818060",
     "src/integrations/plutofish/retention-settings.ts": "d97b0f36bd86af8344ec8cda4a3b2054ee7f9323a268f638de728ff7e4296666",
-    "src/integrations/plutofish/retry.ts": "75881dd7324d948023812d81bcff48fdfaa6c1cc01e5a23464224f7ef2e453de",
+    "src/integrations/plutofish/retry.ts": "801c6435e84cb2061f866b31df1f475a8162463269087d55a0e2341eac044163",
     "src/integrations/plutofish/sources.ts": "188438ff1203d60a501aa26f284a0df676ecd06ecccfc76699b832c9c7d54dfc",
     "src/integrations/plutofish/types.ts": "41f3d3693433bf971717edb0eff3f38cba8c2b2b2361f4f66601702c3b1ea0c6",
     "src/integrations/plutofish/upload-file.ts": "2e671c1350d80f923883646d1d4fc9ebb36d6a62fd92cb70de1fad95ddec134b",

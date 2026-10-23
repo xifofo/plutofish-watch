@@ -51,7 +51,7 @@ else {
       { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
       { label: '窗口', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { label: '显示主窗口', click: showWindow }] },
     ]))
-    // 写操作串行；快照和只读作品搜索独立执行，搜索响应前由连接层再次检查身份。
+    // 写操作串行；只读查询独立执行，重连先取消旧请求以释放正在等待网络的写操作。
     let commands = Promise.resolve()
     ipcMain.handle('watch:command', async (event, action, payload) => {
       if (event.sender !== currentWindow.webContents || event.senderFrame !== currentWindow.webContents.mainFrame) return { ok: false, error: '请求来源无效' }
@@ -100,7 +100,8 @@ else {
           return { ok: false, error: error instanceof Error && /[\u4e00-\u9fff]/.test(error.message) ? error.message : '操作失败，请检查输入、网络或本地目录权限' }
         }
       }
-      if (action === 'snapshot' || action === 'searchWorks') return run()
+      if (['snapshot', 'searchWorks', 'releases', 'directories'].includes(action)) return run()
+      if (action === 'connect') service!.connection.cancelRequests()
       const result = commands.then(run, run)
       commands = result.then(() => {})
       return result

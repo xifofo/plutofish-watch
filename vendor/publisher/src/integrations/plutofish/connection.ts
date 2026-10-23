@@ -23,6 +23,7 @@ export class PlutoFishConnection {
   private state: PlutoFishView = { url: '', hasKey: false, status: 'idle', error: '', identity: null }
   private generation = 0
   private abort?: AbortController
+  private requestAbort = new AbortController()
   private timer?: ReturnType<typeof setTimeout>
   private monitoring = false
   private failures = 0
@@ -98,21 +99,27 @@ export class PlutoFishConnection {
   async request<T>(binding: PublicationDraft['binding'], path: 'tmdb/search' | 'releases/query' | 'tasks/report' | 'uploads/prepare' | 'files/check' | 'files/report' | 'files/ed2k' | 'directories' | 'directories/create' | 'range-proofs/pending' | 'range-proofs/report' | 'range-proofs/forget', body: unknown, signal?: AbortSignal): Promise<T> {
     this.assertBinding(binding)
     const key = this.saved.key
+    const requestSignal = AbortSignal.any([this.requestAbort.signal, ...(signal ? [signal] : [])])
+    const failed = (error: unknown) => {
+      const failure = transportError(error, requestSignal)
+      if (key === this.saved.key && binding.url === this.saved.url && !this.closed && failure.retryable) this.disconnected(failure)
+      return failure
+    }
     let response: Response
     try { response = await fetch(`${this.saved.url}/api/v1/publisher/${path}`, {
       method: 'POST', headers: { Authorization: `Bearer ${this.saved.key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body), credentials: 'omit', redirect: 'error', cache: 'no-store',
-      signal: AbortSignal.any([AbortSignal.timeout(90_000), ...(signal ? [signal] : [])]),
+      signal: AbortSignal.any([AbortSignal.timeout(90_000), requestSignal]),
     })
     } catch (error) {
-      const failure = transportError(error, signal)
-      if (key === this.saved.key && binding.url === this.saved.url && !this.closed && failure.retryable) this.disconnected(failure)
-      throw failure
+      throw failed(error)
     }
+    requestSignal.throwIfAborted()
     this.assertBinding(binding)
     if (key !== this.saved.key) throw new Error('发布端密钥已变化，请重试')
     if (!response.ok) {
       const failure = await response.json().catch(() => null) as { error?: { code?: string } } | null
+      requestSignal.throwIfAborted()
       if (path === 'tmdb/search' && response.status !== 401 && response.status !== 403) {
         if (failure?.error?.code === 'TMDB_KEY_MISSING') throw new Error('请先在 PlutoFish 后台配置 TMDB API Key')
         if (response.status === 404) throw new Error('当前 PlutoFish 服务尚不支持作品搜索，请更新服务端')
@@ -165,7 +172,8 @@ export class PlutoFishConnection {
     }
     let result: T
     try { result = await response.json() as T }
-    catch (error) { throw transportError(error, signal) }
+    catch (error) { throw failed(error) }
+    requestSignal.throwIfAborted()
     this.assertBinding(binding)
     if (key !== this.saved.key) throw new Error('发布端密钥已变化，请重试')
     return result
@@ -177,7 +185,7 @@ export class PlutoFishConnection {
     this.abort?.abort()
     const abort = this.abort = new AbortController()
     this.clearTimer()
-    if (!background) { this.monitoring = false; this.retryInput = undefined; this.failures = 0 }
+    if (!background) { this.cancelRequests(); this.monitoring = false; this.retryInput = undefined; this.failures = 0 }
     this.verifying = true
     this.state = { ...this.state, status: background && this.ready ? 'verified' : 'checking', error: '', reconnect: undefined }
     this.options.changed?.()
@@ -221,6 +229,7 @@ export class PlutoFishConnection {
   private disconnected(error: PublisherError): void {
     if (!this.options.autoReconnect || this.closed || this.state.reconnect || this.verifying || !this.ready) return
     this.state = { ...this.state, status: 'error', identity: null, error: error.message }
+    this.cancelRequests()
     this.monitoring = true
     this.scheduleRetry(error)
     this.options.changed?.()
@@ -250,5 +259,10 @@ export class PlutoFishConnection {
   }
   private clearTimer(): void { if (this.timer) clearTimeout(this.timer); this.timer = undefined }
   private stopMonitor(): void { this.monitoring = false; this.clearTimer(); this.state.reconnect = undefined; this.retryInput = undefined }
-  close(): void { this.closed = true; ++this.generation; this.abort?.abort(); this.stopMonitor() }
+  /** 手动重连可先打断旧请求，避免等待慢目录/版本查询；旧回包不能影响新连接。 */
+  cancelRequests(): void {
+    this.requestAbort.abort(new PublisherError('PlutoFish 连接已变更，旧请求已取消，请重试', true))
+    this.requestAbort = new AbortController()
+  }
+  close(): void { this.closed = true; ++this.generation; this.abort?.abort(); this.cancelRequests(); this.stopMonitor() }
 }

@@ -13,7 +13,7 @@ import brandIcon from '../../../resources/icon.png'
 const api = window.plutoWatch
 
 const state = ref<Snapshot>({ connection: { url: '', hasKey: false, status: 'idle', error: '', identity: null }, watches: [], jobs: [], uploadsPaused: false, ffprobe: '', ffprobeAvailable: false, fatalError: '', retention: defaultRetention() })
-const view = ref('overview'), error = ref(''), notice = ref(''), busy = ref(false)
+const view = ref('overview'), error = ref(''), notice = ref(''), busy = ref(false), connecting = ref(false)
 watch(view, async () => { notice.value = '';  await nextTick(); window.scrollTo(0, 0) })
 const sourceRoot = ref<WatchRoot>(), sourceDraft = ref<ReleaseSource>({})
 function editSource(root: WatchRoot) { sourceRoot.value = root; sourceDraft.value = { ...root.sourcePreset } }
@@ -21,6 +21,7 @@ async function saveSource() { await run(async () => { await api.setSourcePreset(
 const credentials = reactive({ url: '', key: '' })
 let unsubscribe: (() => void) | undefined
 const connected = computed(() => state.value.connection.status === 'verified')
+watch(connected, ready => { if (ready && error.value.startsWith('PlutoFish 网络连接中断')) error.value = '' })
 const active = computed(() => state.value.watches.filter(w => w.enabled).length)
 const pending = computed(() => state.value.jobs.filter(j => ['queued', 'preparing', 'processing', 'uploading', 'waiting'].includes(j.status)).length)
 const attention = computed(() => state.value.jobs.filter(j => ['failed', 'review'].includes(j.status)).length)
@@ -35,7 +36,15 @@ async function run(fn: () => Promise<unknown>) {
 async function backfill(id: string) { await run(async () => { const count = await api.backfill(id); notice.value = count ? `已加入 ${count} 个历史文件` : '没有待补传的历史文件' }) }
 function add() { view.value = connected.value ? 'new' : 'settings' }
 async function save(input: WatchInput) { await run(async () => { await api.add(input); view.value = 'watches' }) }
-async function connect() { await run(async () => { await api.connect({ ...credentials }); credentials.key = '' }) }
+async function connect() {
+  if (connecting.value) return
+  connecting.value = true; error.value = ''
+  try {
+    await api.connect({ ...credentials }); credentials.key = ''
+    state.value = await api.snapshot(); error.value = ''
+  } catch (e) { error.value = e instanceof Error ? e.message : '连接失败' }
+  finally { connecting.value = false }
+}
 onMounted(async () => {
   unsubscribe = api.onChange(value => { state.value = value })
   await run(async () => { state.value = await api.snapshot(); credentials.url = state.value.connection.url })
@@ -56,14 +65,15 @@ onUnmounted(() => unsubscribe?.())
         <div v-if="state.fatalError" class="notice error" role="alert">{{ state.fatalError }}</div>
         <div v-if="error" class="notice error dismissible" role="alert">{{ error }}<button class="icon-button" aria-label="关闭错误" @click="error = ''"><Icon name="close" :size="16" /></button></div>
         <div v-if="notice" class="notice dismissible" role="status">{{ notice }}<button class="icon-button" aria-label="关闭提示" @click="notice = ''"><Icon name="close" :size="16" /></button></div>
+        <div v-if="state.connection.reconnect" class="notice" role="status">连接中断，正在自动恢复 · {{ new Date(state.connection.reconnect.nextAt).toLocaleTimeString('zh-CN') }} 重试</div>
         <template v-if="view === 'new'"><DirectoryForm :state="state" :busy="busy" @save="save" @back="view = 'watches'" /></template>
         <template v-else-if="view === 'settings'">
           <div class="page-heading"><h1>连接与设置</h1></div>
           <section class="panel settings-panel"><div class="section-label"><div class="file-icon"><Icon name="cloud" /></div><div><h2>PlutoFish 服务</h2></div></div>
-            <form @submit.prevent="connect"><fieldset :disabled="busy"><label>服务地址<input v-model="credentials.url" type="url" placeholder="https://plutofish.example.com" required /></label><label>发布端凭据<input v-model="credentials.key" type="password" autocomplete="new-password" :placeholder="state.connection.hasKey ? '已保存；留空继续使用当前凭据' : '粘贴完整发布端凭据'" /></label>
+            <form @submit.prevent="connect"><fieldset :disabled="connecting"><label>服务地址<input v-model="credentials.url" type="url" placeholder="https://plutofish.example.com" required /></label><label>发布端凭据<input v-model="credentials.key" type="password" autocomplete="new-password" :placeholder="state.connection.hasKey ? '已保存；留空继续使用当前凭据' : '粘贴完整发布端凭据'" /></label>
               <div v-if="state.connection.error" class="notice error">{{ state.connection.error }}<p v-if="state.connection.reconnect" class="hint">{{ new Date(state.connection.reconnect.nextAt).toLocaleTimeString('zh-CN') }} 自动重连 · 第 {{ state.connection.reconnect.attempt }} 次</p></div>
               <div v-if="connected" class="identity-card"><Icon name="check" :size="19" /><div><strong>{{ state.connection.identity?.name }}</strong><p>已验证发布端 · {{ state.connection.identity?.sourceAccounts?.length ?? 1 }} 个授权源账号</p></div></div>
-              <div class="form-footer"><span class="hint">凭据加密保存在本机</span><button class="button primary" type="submit">{{ busy ? '正在连接…' : connected ? '重新验证连接' : '保存并连接' }}</button></div>
+              <div class="form-footer"><span class="hint">凭据加密保存在本机</span><button class="button primary" type="submit">{{ connecting ? '正在连接…' : connected ? '重新验证连接' : '保存并连接' }}</button></div>
             </fieldset></form>
           </section>
           <section class="panel settings-panel"><h2>视频检测</h2><div class="tool-row probe-row"><div><span class="badge" :class="state.ffprobeAvailable ? 'completed' : 'review'">{{ state.ffprobeAvailable ? '可用' : '需要配置' }}</span><code>{{ state.ffprobe }}</code></div><button class="button secondary" :disabled="busy" @click="run(() => api.chooseProbe())">选择 ffprobe</button></div></section>
@@ -73,7 +83,6 @@ onUnmounted(() => unsubscribe?.())
         <template v-else>
           <div class="page-heading"><h1>{{ view === 'overview' ? '概览' : view === 'watches' ? '监控目录' : '传输任务' }}</h1>
             <div class="heading-actions"><button v-if="state.watches.length" class="button secondary" :disabled="busy" @click="run(() => api.scan())"><Icon name="refresh" :size="16" />补扫</button><button v-if="view === 'jobs'" class="button secondary" :disabled="busy" @click="run(() => api.pauseAll())"><Icon :name="state.uploadsPaused ? 'play' : 'pause'" :size="16" />{{ state.uploadsPaused ? '继续上传' : '暂停上传' }}</button><button v-else class="button primary" :disabled="busy" @click="add"><Icon name="plus" :size="18" />添加目录</button></div></div>
-          <div v-if="state.connection.reconnect" class="notice" role="status">连接中断，正在自动恢复 · {{ new Date(state.connection.reconnect.nextAt).toLocaleTimeString('zh-CN') }} 重试</div>
           <div v-if="state.uploadsPaused" class="notice">{{ state.retention.enabled ? '上传与自动清理已暂停' : '上传已暂停' }} · 目录监控中<button class="link" :disabled="busy" @click="run(() => api.pauseAll())">继续上传</button></div>
           <div v-if="view === 'overview'" class="stats">
             <div class="stat"><span>监控目录<Icon name="folder" :size="17" /></span><strong>{{ active.toString().padStart(2, '0') }}</strong></div>

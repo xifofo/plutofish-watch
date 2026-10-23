@@ -25,9 +25,12 @@ export function retryableError(error: unknown, seen = new Set<unknown>()): boole
   if (seen.has(error)) return false
   seen.add(error)
   if (error instanceof PublisherError) return error.retryable
-  const e = error as { name?: string; code?: string; status?: number; cause?: unknown } | null
+  const e = error as { name?: string; code?: string; status?: number; cause?: unknown; errors?: unknown[] } | null
   if (!e || typeof e !== 'object') return false
   if (['ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID'].includes(e.code ?? '')) return false
+  // Node 同时尝试 IPv4/IPv6 时可能只在 AggregateError.errors 中提供系统码。
+  // 所有分支均可恢复才重试，混入证书、权限或未知错误时仍停止。
+  if (Array.isArray(e.errors) && e.errors.length) return e.errors.every(child => retryableError(child, new Set(seen)))
   if (['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'ENETDOWN', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE',
     'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET', 'RequestTimeout', 'ConnectionTimeout', 'TimeoutError', 'SlowDown', 'ServiceUnavailable'].includes(e.code ?? '')) return true
   if (['TimeoutError', 'ConnectionTimeoutError', 'ResponseTimeoutError'].includes(e.name ?? '')) return true

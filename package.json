@@ -1,7 +1,7 @@
 {
   "name": "plutofish-watch",
   "productName": "PlutoFish Watch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "PlutoFish 目录监控与自动发布客户端",
   "main": "out/main/index.js",
@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && vue-tsc --noEmit -p tsconfig.web.json",
     "test": "bun test tests",
     "publisher:check": "node scripts/sync-publisher.mjs --check",
-    "pack": "pnpm run build && electron-builder --dir"
+    "pack": "pnpm run build && electron-builder --dir",
+    "pack:win:x64": "pnpm run build && electron-builder --win nsis --x64 --publish never"
   },
   "pnpm": { "onlyBuiltDependencies": ["electron", "esbuild"] },
   "dependencies": {
@@ -38,8 +39,10 @@
     "directories": { "output": "release" },
     "files": ["out/**", "resources/icon.png", "package.json"],
     "npmRebuild": false,
+    "toolsets": { "nsis": "1.2.1" },
     "mac": { "category": "public.app-category.utilities", "identity": null, "icon": "resources/icon.icns" },
     "win": { "target": "nsis", "icon": "resources/icon.ico" },
+    "nsis": { "artifactName": "PlutoFish-Watch-${version}-windows-${arch}-setup.${ext}" },
     "linux": { "target": "AppImage", "category": "Utility", "icon": "resources/icon.png" }
   }
 }
