@@ -11,6 +11,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 let temp, server, failed = false, win
 const puts = new Set(), calls = []
 let maxPuts = 0
+let grouped = true
 async function until(fn, timeout = 30000) {
   const deadline = Date.now() + timeout
   while (Date.now() < deadline) { if (await fn()) return; await sleep(100) }
@@ -50,7 +51,7 @@ async function until(fn, timeout = 30000) {
     const body = text ? JSON.parse(text) : {}, endpoint = req.url.replace('/api/v1/publisher/', '')
     calls.push({ endpoint, body })
     let result
-    if (endpoint === 'me') result = { id: 'publisher', name: '上传离线验收', kind: 'publisher', sourceAccount: { id: 'source', alias: 'offline', name: '离线网盘', provider: '115' }, categories: [{ value: 'tv', label: '剧集' }] }
+    if (endpoint === 'me') result = { id: 'publisher', name: '上传离线验收', kind: 'publisher', sourceAccount: { id: 'source', alias: 'offline', name: '离线网盘', provider: '115' }, categories: [{ value: 'tv', label: '剧集' }], ...(grouped ? { capabilities: { uploadClientGrouping: true } } : {}) }
     else if (endpoint === 'releases/query') result = { items: [{ id: 'a'.repeat(32), name: 'S01.720p.WEB.WEB-DL.SDR.AVC', resolution: '720p', dynamicRange: 'SDR', status: 'published' }], total: 1, page: 1, pageSize: 100 }
     else if (endpoint === 'files/check') result = { status: 'missing' }
     else if (endpoint === 'tasks/report') result = { outcome: 'applied' }
@@ -105,6 +106,13 @@ async function until(fn, timeout = 30000) {
   await until(() => puts.size === 0)
   assert.equal((await snapshot()).jobs.some(j => j.transfer), false)
   assert.ok((await snapshot()).jobs.some(j => j.ed2k?.state === 'done'))
+  grouped = false
+  await js(`window.plutoWatch.connect(${JSON.stringify({ url: `http://127.0.0.1:${server.address().port}`, key: 'offline-ui-only' })})`)
+  await until(() => js("document.body.innerText.includes('单文件兼容模式')"))
+  nativeTheme.themeSource = 'light'; win.setSize(1240, 840); await screenshot('35-upload-compatibility-light')
+  nativeTheme.themeSource = 'dark'; win.setSize(760, 720); await screenshot('36-upload-compatibility-narrow-dark')
+  assert.equal(await js('document.documentElement.scrollWidth > innerWidth'), false)
+  assert.equal((await snapshot()).uploadsPaused, true)
   assert.deepEqual(errors, [])
   console.log(JSON.stringify({ ok: true, maximumUploads: maxPuts, preparedWhileUploading: true, liveSpeed: true, transientNotPersisted: true, isolatedPause: true, backgroundED2K: true, rendererErrors: errors }))
   app.quit()

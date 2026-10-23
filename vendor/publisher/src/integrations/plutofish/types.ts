@@ -15,6 +15,8 @@ export type PublisherIdentity = {
   kind: 'publisher'
   sourceAccount: PublisherSource
   sourceAccounts?: PublisherSource[]
+  /** 只有服务端明确声明支持才发送上传扩展字段；未知能力由解析器忽略。 */
+  capabilities?: { uploadClientGrouping: boolean }
   /** 旧服务端不返回此字段时，桌面端提示刷新或升级并阻止新下载。 */
   categories?: Array<{ value: string; label: string }>
 }
@@ -24,5 +26,7 @@ export type PlutoFishView = {
   status: 'idle' | 'checking' | 'verified' | 'error'
   error: string
   identity: PublisherIdentity | null
+  /** 连接能力提示，不作为错误或持久化配置。 */
+  uploadNotice?: string
   reconnect?: { attempt: number; nextAt: number }
 }

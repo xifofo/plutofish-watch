@@ -33,7 +33,7 @@ export class WatchPublisher {
     private retryOptions: { now?: () => number; baseMs?: number; maxMs?: number; factory?: OSSFactory; compute?: RetentionOptions['compute'] } = {},
   ) {
     this.worker = new PublicationWorker(connection, (draft, transient) => this.update(draft, transient), {
-      directory: join(directory, 'publications'), factory: retryOptions.factory, manual: true, retention: {
+      directory: join(directory, 'publications'), factory: retryOptions.factory, manual: true, now: retryOptions.now, retention: {
         compute: retryOptions.compute,
         now: retryOptions.now,
         settings: () => {
@@ -119,11 +119,17 @@ export class WatchPublisher {
   private scheduleRetry(job: WatchJob, retryAfterMs = 0, failureId?: string): void {
     if (job.manuallyPaused || job.changed || (failureId && job.retry?.failureId === failureId)) return
     const attempt = (job.retry?.attempt ?? 0) + 1
+    // 保留失败身份及次数，后续进度同步不能重新开启耗尽的自动重试。
+    if (attempt > 8) {
+      job.retry = { attempt, failureId }
+      job.error = '自动重试已达上限，请检查失败原因后手动重试'
+      return
+    }
     job.retry = { attempt, failureId, nextAt: this.now() + Math.max(retryDelay(attempt, this.retryOptions.baseMs, this.retryOptions.maxMs), retryAfterMs) }
   }
 
   private eligible(root?: WatchRoot): boolean {
-    return !!root?.enabled && !!this.store.data.watches.find(w => w.id === root.id)?.enabled && !this.store.data.uploadsPaused && this.connection.ready && !this.closed && !this.fatalError
+    return !!root?.enabled && !!this.store.data.watches.find(w => w.id === root.id)?.enabled && !this.store.data.uploadsPaused && this.connection.ready && !this.closed && !this.fatalError && !this.worker.uploadPaused(root.binding)
   }
 
   async tick(): Promise<void> {
@@ -249,7 +255,7 @@ export class WatchPublisher {
         output: job.path, measured, updatedAt: new Date().toISOString(),
       }
       this.worker.register(draft)
-      this.worker.control(key, 'resume')
+      this.worker.control(key, 'resume', true)
       this.worker.event(draft, { id: 0, status: '本地文件已就绪', pct: 1, log: '', err: '', done: true, completedMedia: measured })
     } catch (error) {
       if (!signal.aborted && job.status === 'preparing') {
@@ -260,6 +266,8 @@ export class WatchPublisher {
         if (job.fileKey) job.preparationError = job.error
       }
     } finally {
+      // 另一文件触发账号暂停时，本文件可能还在探测或计算摘要；准备已结束，不能滞留 preparing。
+      if (!signal.aborted && job.status === 'preparing') { job.status = 'queued'; job.phase = undefined }
       if (job.phase === 'checking') job.phase = undefined
       job.updatedAt = new Date().toISOString()
       this.store.save(); this.changed()

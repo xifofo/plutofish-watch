@@ -7,8 +7,9 @@ export type Source = { id: string; alias: string; name: string; provider?: strin
 export type Identity = {
   id: string; name: string; kind: 'publisher'; sourceAccount: Source; sourceAccounts?: Source[]
   categories?: Array<{ value: string; label: string }>
+  capabilities?: { uploadClientGrouping: boolean }
 }
-export type Connection = { url: string; hasKey: boolean; status: string; error: string; identity: Identity | null; reconnect?: { attempt: number; nextAt: number } }
+export type Connection = { url: string; hasKey: boolean; status: string; error: string; identity: Identity | null; uploadNotice?: string; reconnect?: { attempt: number; nextAt: number } }
 export type LocalRetentionSettings = { enabled: boolean; days: number }
 export type Binding = {
   url: string; publisherId: string; sourceAccount: { id: string; alias: string }

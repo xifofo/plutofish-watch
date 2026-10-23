@@ -1,5 +1,6 @@
 /** 强制连接状态机：每次启动重验，过期请求不能放行，运行中定时重验。 */
 import { PublisherError, retryableError, retryableHTTP, retryAfter, retryDelay, transportError } from './retry'
+import { UploadRateLimitError } from './upload-pause'
 import { loadPlutoFishConfig, savePlutoFishConfig } from './config.ts'
 import { normalizePlutoFishURL, verifyPublisher } from './client.ts'
 import type { PlutoFishInput, PlutoFishView, PublisherIdentity, PublisherDirectoryPage } from './types.ts'
@@ -43,7 +44,11 @@ export class PlutoFishConnection {
   }
 
   get ready(): boolean { return !this.closed && this.state.status === 'verified' }
-  view(): PlutoFishView { return structuredClone(this.state) }
+  get groupedUploads(): boolean { return this.ready && this.state.identity?.capabilities?.uploadClientGrouping === true }
+  view(): PlutoFishView {
+    return { ...structuredClone(this.state), uploadNotice: this.ready && !this.groupedUploads
+      ? '服务端尚未声明支持双文件上传，已使用单文件兼容模式；其他文件仍会提前准备。' : undefined }
+  }
   assertReady(): void { if (!this.ready) throw new PublisherError('请先完成网关与 PlutoFish 双重鉴权', !!(this.options.autoReconnect && this.monitoring && (this.state.reconnect || this.verifying)) && !this.closed) }
 
   /** 绑定或权限变化后，尚未发送的 OSS 分片也必须停止。 */
@@ -156,8 +161,12 @@ export class PlutoFishConnection {
         throw new Error('作品搜索失败，请稍后重试')
       }
       if (path === 'uploads/prepare') {
+        if (failure?.error?.code === 'CLOUD_ACCESS_LIMIT') throw new UploadRateLimitError()
         // 使用本地固定提示，不把供应商正文或凭据送到渲染进程。
         const messages: Record<string, string> = {
+          CLOUD_ACCESS_LIMIT: '115 已限制访问，自动上传已停止，请稍后手动继续',
+          CLOUD_REFRESH_PAUSED: '115 凭据刷新已暂停，请在账号管理中手动刷新',
+          CLOUD_UPLOAD_SEARCH_LIMIT: '115 文件搜索结果过多，已停止核验，请人工核对目标文件',
           CLOUD_UPLOAD_RESPONSE: '115 上传调度信息不完整，请重试上传；已下载文件会保留',
           CLOUD_PROVIDER_RESPONSE: '115 上传服务响应异常，请重试上传；已下载文件会保留',
           CLOUD_UPLOAD_REJECTED: '115 拒绝上传，请检查源账号权限和目标文件夹',
@@ -171,6 +180,7 @@ export class PlutoFishConnection {
         }
         const message = messages[failure?.error?.code ?? '']
         if (message && response.status !== 401 && response.status !== 403) throw new PublisherError(message, ['CLOUD_UPLOAD_UNCERTAIN', 'CLOUD_UPLOAD_NOT_READY'].includes(failure?.error?.code ?? ''), retryAfter(response))
+        if (failure?.error?.code?.startsWith('CLOUD_') && response.status !== 401 && response.status !== 403) throw new PublisherError('115 操作已停止，请在 PlutoFish 查看失败原因后手动继续', false)
       }
       if (response.status === 409) {
         if (failure?.error?.code === 'PUBLISHER_UPLOAD_BUSY') throw new PublisherError('PlutoFish 网盘上传排队中', true, retryAfter(response))

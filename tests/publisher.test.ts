@@ -559,7 +559,7 @@ test('新版本等待上传时重启、并发发现和不同画质不会产生�
       status: 'queued', fileKey: undefined, sha1: undefined, release: undefined, targetKey: undefined,
       signature: await safeFile(f.root.path, path) })
   }
-  await until(publisher, () => store.data.jobs.every(j => j.status === 'completed'))
+  await until(publisher, () => store.data.jobs.every(j => j.status === 'completed')).catch(error => { throw new Error(error.message + JSON.stringify(store.data.jobs.map(j => ({ id:j.id,status:j.status,error:j.error })))) })
   expect(f.createdReleases.size).toBe(2)
   expect(store.data.jobs[1].release?.key).toBe(key)
   expect(store.data.jobs[2].release?.key).not.toBe(key)
@@ -802,4 +802,116 @@ test('同下载器一样复用旧别名和缺少音轨标签的版本，不额�
   await until(f.publisher, () => f.job.status === 'completed')
   expect(f.job.release?.id).toBe('a'.repeat(32))
   expect(f.createdReleases.size).toBe(0)
+})
+
+
+test('115 限流停止当前上传，不自动重试；已就绪响应不重复核验', async () => {
+  let now = 100000
+  const limited = await setup({ retry: { now: () => now }, reply: (path, body) => path === 'uploads/prepare' && body.action === 'start'
+    ? { status: 502, body: { error: { code: 'CLOUD_ACCESS_LIMIT' } } } : undefined })
+  await until(limited.publisher, () => limited.job.status === 'failed')
+  expect(limited.job.retry).toBeUndefined()
+  const count = limited.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'start').length
+  now += 3600000
+  for (let i = 0; i < 5; i++) await limited.publisher.tick()
+  expect(limited.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'start')).toHaveLength(count)
+  const ready = await setup()
+  await until(ready.publisher, () => ready.job.status === 'completed')
+  expect(ready.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'verify')).toHaveLength(0)
+})
+
+test('可恢复失败最多自动重试八次，耗尽后仍保留失败状态', async () => {
+  let now = 100000
+  const f = await setup({ retry: { now: () => now, baseMs: 1, maxMs: 1 }, reply: path => path === 'files/check' ? { status: 503 } : undefined })
+  for (let attempt = 1; attempt <= 9; attempt++) {
+    await until(f.publisher, () => f.job.status === 'failed' && f.job.retry?.attempt === attempt)
+    now += 10
+  }
+  expect(f.job.retry?.nextAt).toBeUndefined()
+  const calls = f.calls.length
+  now += 3600000
+  for (let i = 0; i < 5; i++) await f.publisher.tick()
+  expect(f.calls).toHaveLength(calls)
+})
+
+test('115 访问受限暂停账号队列，重启与自动重连不恢复，冷却后手动继续', async () => {
+  let now = 100000, limited = true
+  const f = await setup({
+    retry: { now: () => now },
+    reply: (path, body) => limited && path === 'uploads/prepare' && body.action === 'start'
+      ? { status: 502, body: { error: { code: 'CLOUD_ACCESS_LIMIT' } } } : undefined,
+  })
+  const secondPath = join(f.root.path, 'Show.S01E02.mp4')
+  await copyFile(f.file, secondPath)
+  const second: WatchJob = { ...f.job, id: 'second-job', path: secondPath, relativePath: 'Show.S01E02.mp4', episodeNumber: 2, signature: await safeFile(f.root.path, secondPath) }
+  f.store.data.jobs.push(second); f.store.save()
+  await until(f.publisher, () => f.job.status === 'failed')
+  expect(f.job.error).toContain('队列已暂停')
+  expect(f.job.error).not.toContain('private')
+  expect(f.job.retry).toBeUndefined()
+  expect(f.publisher.worker.uploadPaused(f.root.binding)).toBe(true)
+  const starts = () => f.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'start').length
+  expect(starts()).toBe(1)
+  for (let i = 0; i < 8; i++) await f.publisher.tick()
+  expect(starts()).toBe(1)
+  expect(() => f.publisher.worker.resumeAccount(f.root.binding)).toThrow('冷却')
+  await f.publisher.close()
+  const store = new WatchStore(f.store.path)
+  f.connection.validateFile = validateWatchedFile(store)
+  const publisher = new WatchPublisher(store, f.connection, f.temp, () => {}, e => { throw e }, { now: () => now })
+  disposers.push(() => publisher.close()); publisher.start()
+  now += 3600000
+  publisher.resume()
+  for (let i = 0; i < 8; i++) await publisher.tick()
+  expect(publisher.worker.uploadPaused(f.root.binding)).toBe(true)
+  expect(starts()).toBe(1)
+  limited = false
+  publisher.worker.resumeAccount(f.root.binding)
+  // 用户明确恢复被暂停的两条任务；解除账号阻断本身不自动重放失败文件。
+  for (const job of store.data.jobs) { job.status = 'queued'; delete job.retry }
+  await until(publisher, () => store.data.jobs.every(j => j.status === 'completed'))
+})
+
+test('OSS SlowDown 进入有限退避，不暂停账号队列，等待后自动恢复', async () => {
+  let now = 100000, limited = true, ossCalls = 0
+  const f = await setup({
+    retry: { now: () => now, baseMs: 1000, maxMs: 1000, factory: () => ({ close() {}, client: {
+      async initMultipartUpload() { ossCalls++; throw Object.assign(new Error('private OSS response'), { code: 'SlowDown', status: 503 }) },
+      async listParts() { throw new Error('unexpected list') },
+      async uploadPart() { throw new Error('unexpected put') },
+      async completeMultipartUpload() { throw new Error('unexpected complete') },
+    } }) },
+    reply: (path, body) => {
+      if (!limited || path !== 'uploads/prepare') return undefined
+      if (body.action === 'start') return { body: { dispatch: { status: 'uploading', bucket: 'bucket', object: 'object', pickCode: 'original', callback: '{}' } } }
+      if (body.action === 'credentials') return { body: { credentials: { accessKeyId: 'fake', accessKeySecret: 'fake', securityToken: 'fake', expiration: new Date(Date.now() + 3600000).toISOString(), rate: 0 } } }
+      return undefined
+    },
+  })
+  await until(f.publisher, () => f.job.status === 'failed')
+  expect(f.job.retry?.attempt).toBe(1)
+  expect(f.job.retry?.nextAt).toBe(now + 1000)
+  expect(f.publisher.worker.uploadPaused(f.root.binding)).toBe(false)
+  expect(f.job.error).not.toContain('private')
+  expect(ossCalls).toBe(1)
+  for (let i = 0; i < 4; i++) await f.publisher.tick()
+  expect(ossCalls).toBe(1)
+  limited = false
+  now += 1001
+  await until(f.publisher, () => f.job.status === 'completed')
+  expect(f.publisher.worker.uploadPaused(f.root.binding)).toBe(false)
+})
+
+test('准备期间账号被暂停，未登记任务保留排队状态，解除后继续而不滞留处理中', async () => {
+  const f = await setup()
+  const original = f.publisher.worker.uploadPaused.bind(f.publisher.worker)
+  let pauseDuringPrepare = true
+  // 模拟另一上传任务恰好在本文件探测期间触发同账号暂停。
+  f.publisher.worker.uploadPaused = binding => (pauseDuringPrepare && f.job.status === 'preparing') || original(binding)
+  await f.publisher.tick()
+  expect(f.job.fileKey).toBeUndefined()
+  expect(f.job.status).toBe('queued')
+  expect(f.calls.some(c => c.path === 'uploads/prepare' && c.body.action === 'start')).toBe(false)
+  pauseDuringPrepare = false
+  await until(f.publisher, () => f.job.status === 'completed')
 })

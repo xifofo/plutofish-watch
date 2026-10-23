@@ -80,6 +80,7 @@ onUnmounted(() => unsubscribe?.())
         <div v-if="error" class="notice error dismissible" role="alert">{{ error }}<button class="icon-button" aria-label="关闭错误" @click="error = ''"><Icon name="close" :size="16" /></button></div>
         <div v-if="notice" class="notice dismissible" role="status">{{ notice }}<button class="icon-button" aria-label="关闭提示" @click="notice = ''"><Icon name="close" :size="16" /></button></div>
         <div v-if="state.connection.reconnect" class="notice" role="status">连接中断，正在自动恢复 · {{ new Date(state.connection.reconnect.nextAt).toLocaleTimeString('zh-CN') }} 重试</div>
+        <div v-if="state.connection.uploadNotice" class="notice" role="status">{{ state.connection.uploadNotice }}</div>
         <template v-if="view === 'new' || view === 'edit'"><DirectoryForm :key="view + (editing?.id ?? '')" :initial="view === 'edit' ? editing : undefined" :state="state" :busy="busy" @save="save" @back="view = 'watches'" /></template>
         <template v-else-if="view === 'settings'">
           <div class="page-heading"><h1>连接与设置</h1></div>

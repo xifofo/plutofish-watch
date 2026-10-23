@@ -84,6 +84,8 @@ export async function uploadParts(options: {
     if (!token || Date.parse(token.expiration) - Date.now() < 180_000 || Date.now() - tokenCheckedAt >= 60_000) {
       session?.close()
       token = await options.credentials()
+      signal.throwIfAborted()
+      options.authorize?.()
       tokenCheckedAt = Date.now()
       if (!Number.isFinite(Date.parse(token.expiration)) || Date.parse(token.expiration) <= Date.now() || !Number.isSafeInteger(token.rate) || token.rate < 0 || token.rate > 104857600) throw new Error('115 临时凭据无效')
       budget = options.budgetFor?.(token) ?? budget
@@ -103,11 +105,13 @@ export async function uploadParts(options: {
     save()
   }
   try {
-    if (!cp.uploadId) await initialize()
-    // ListParts 只用于核对本地回执；没有持久化确认的片重新上传，不能把远端列表直接当完成清单。
+    const resuming = !!cp.uploadId
+    if (!resuming) await initialize()
+    // 只在续传时核对远端分片；新会话没有分片，不额外查询空列表。
+    // 没有本地持久化回执的片仍须重传。
     const remote = new Map<number, { etag: string; size: number }>()
     let marker = 0
-    for (;;) {
+    for (; resuming;) {
       let page: OSS.ListPartsResult
       try {
         page = await (await client()).listParts(dispatch.object, cp.uploadId!, { 'max-parts': 1000, 'part-number-marker': marker, 'encoding-type': 'url' })
@@ -122,7 +126,7 @@ export async function uploadParts(options: {
         cp.uploadId = undefined; cp.parts = []; cp.completing = false
         save(); progress(0)
         await initialize()
-        continue
+        break
       }
       if (page.uploadId !== cp.uploadId || page.bucket !== dispatch.bucket || decodeURIComponent(page.name) !== dispatch.object) throw new Error('115 分片列表与原任务不匹配')
       const parts = Array.isArray(page.parts) ? page.parts : [page.parts]

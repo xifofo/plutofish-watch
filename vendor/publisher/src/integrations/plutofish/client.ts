@@ -24,7 +24,12 @@ function identity(value: unknown): PublisherIdentity {
   if (categories !== undefined && (!Array.isArray(categories) || categories.some(c => !c || !valid(c.value) || !valid(c.label)))) {
     throw new Error('PlutoFish 分类响应格式不正确，请确认服务版本')
   }
-  const options = categories === undefined ? {} : { categories: (categories as Array<{value: string; label: string}>).map(c => ({ value: c.value, label: c.label })) }
+  // 更高版本可增加能力；只识别显式 true，缺失、未知或格式异常时保守使用旧上传协议。
+  const capabilities = v.capabilities as Record<string, unknown> | undefined
+  const options = {
+    ...(categories === undefined ? {} : { categories: (categories as Array<{value: string; label: string}>).map(c => ({ value: c.value, label: c.label })) }),
+    ...(capabilities === undefined ? {} : { capabilities: { uploadClientGrouping: capabilities !== null && typeof capabilities === 'object' && !Array.isArray(capabilities) && capabilities.uploadClientGrouping === true } }),
+  }
   const source = (value: unknown) => {
     const a = value as Record<string, unknown> | null
     if (!a || !valid(a.id) || !valid(a.name) || !valid(a.alias) || (a.provider !== undefined && !valid(a.provider)) || (a.enabled !== undefined && a.enabled !== true)) {

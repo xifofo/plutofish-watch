@@ -284,7 +284,8 @@ export class WatchService {
         if (job.fileKey && episode !== job.episodeNumber) throw new Error('已登记任务不能修改集号')
         job.episodeNumber = episode
       }
-      if (job.retry) delete job.retry.nextAt
+      this.publisher.worker.resumeAccount(root.binding)
+      delete job.retry
       job.status = job.fileKey ? 'queued' : 'waiting'; job.manuallyPaused = false; job.error = ''
       // 尚未登记的文件仍需通过当前稳定窗口；季号变化后可回到人工集号确认。
       if (!job.fileKey && root.enabled) await this.watcher.scanOne(root)
