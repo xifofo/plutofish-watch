@@ -36,6 +36,8 @@ export type Observation = {
 export type JobStatus = 'waiting' | 'queued' | 'preparing' | 'review' | 'processing' | 'uploading' | 'paused' | 'failed' | 'completed' | 'duplicate' | 'cancelled'
 export type WatchJob = {
   id: string; watchId: string; path: string; relativePath: string; signature: Signature
+  /** 编辑目录后，已开始发布的任务继续沿用原路径和发布归属。 */
+  watchSnapshot?: WatchRoot
   status: JobStatus; createdAt: string; updatedAt: string; episodeNumber?: number
   fileKey?: string; sha1?: string; percent: number; phase?: string; error: string
   /** 跨目录和重命名的内容归属；不使用本地路径或监控目录 ID。 */
@@ -81,6 +83,7 @@ export interface WatchAPI {
   releases(input: Omit<WatchInput, 'path' | 'includeExisting' | 'stableSeconds' | 'releaseId'>): Promise<Release[]>
   directories(input: { sourceAccountId: string; directoryId: string; cursor?: string }): Promise<DirectoryPage>
   add(input: WatchInput): Promise<void>
+  updateWatch(input: { id: string; watch: WatchInput }): Promise<void>
   setSourcePreset(input: { id: string; source: ReleaseSource }): Promise<void>
   setRetention(input: LocalRetentionSettings): Promise<void>
   toggleWatch(id: string): Promise<void>

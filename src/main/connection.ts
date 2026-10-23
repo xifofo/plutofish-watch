@@ -26,7 +26,7 @@ export class WatchConnection extends PlutoFishConnection {
 export function validateWatchedFile(store: WatchStore) {
   return async (key: string): Promise<void> => {
     const job = store.data.jobs.find(j => j.fileKey === key && !j.changed && j.status !== 'cancelled')
-    const root = store.data.watches.find(w => w.id === job?.watchId)
+    const root = store.rootFor(job)
     if (!job || !root?.enabled || store.data.uploadsPaused || job.manuallyPaused) throw new Error('成品任务已停止，不能继续上传')
     if (!sameSignature(await safeFile(root.path, job.path), job.signature)) throw new Error('成品在上传期间发生变化，已停止原任务')
   }

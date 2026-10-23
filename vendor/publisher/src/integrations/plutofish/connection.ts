@@ -118,8 +118,28 @@ export class PlutoFishConnection {
     this.assertBinding(binding)
     if (key !== this.saved.key) throw new Error('发布端密钥已变化，请重试')
     if (!response.ok) {
-      const failure = await response.json().catch(() => null) as { error?: { code?: string } } | null
+      const failure = await response.json().catch(() => null) as { error?: { code?: string; fieldErrors?: Record<string, unknown> } } | null
       requestSignal.throwIfAborted()
+      if (response.status === 422 && path !== 'tmdb/search') {
+        // 只展示固定字段名和业务提示，绝不把服务端正文、字段值或供应商凭据带入界面。
+        const labels: Record<string, string> = {
+          title: '作品或集标题', episodeTitle: '集标题', episodeNumber: '集号', seasonNumber: '季号',
+          taskKey: '任务、版本或源账号标识', releaseKey: '版本标识', sourceAccount: '源账号',
+          workTarget: '作品信息', 'releaseTarget.workTarget.tmdbId': 'TMDB ID',
+          'releaseTarget.workTarget.mediaType': '作品类型', 'releaseTarget.workTarget.category': '资源分类',
+          sequence: '任务序号', stage: '任务阶段', progress: '进度', sizeBytes: '文件大小', directoryId: '网盘目录',
+        }
+        const fields = failure?.error?.fieldErrors
+        const names = fields && typeof fields === 'object' && !Array.isArray(fields)
+          ? [...new Set(Object.keys(fields).map(key => labels[key]).filter(Boolean))].join('、') : ''
+        const reasons: Record<string, string> = {
+          TMDB_KEY_MISSING: '请先在后台配置 TMDB API Key',
+          TMDB_WORK_NOT_FOUND: 'TMDB 中不存在该类型和 ID 的作品',
+        }
+        const reason = reasons[failure?.error?.code ?? ''] || (names ? `${names}校验未通过` : '提交的数据未通过校验，请检查目录绑定与任务信息')
+        const action = path === 'tasks/report' ? '任务上报' : path === 'files/report' ? '资源登记' : path === 'uploads/prepare' ? '上传调度' : path === 'releases/query' ? '版本查询' : '请求'
+        throw new PublisherError(`PlutoFish ${action}失败：${reason}（HTTP 422）`)
+      }
       if (path === 'tmdb/search' && response.status !== 401 && response.status !== 403) {
         if (failure?.error?.code === 'TMDB_KEY_MISSING') throw new Error('请先在 PlutoFish 后台配置 TMDB API Key')
         if (response.status === 404) throw new Error('当前 PlutoFish 服务尚不支持作品搜索，请更新服务端')

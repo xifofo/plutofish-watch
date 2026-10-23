@@ -47,6 +47,7 @@ function retentionLabel(job: WatchJob): string {
       <div class="task-body"><div class="task-title" :title="job.path">{{ job.relativePath }}</div><div class="task-meta"><span>{{ size(job.signature.size) }}</span><span v-if="job.episodeNumber !== undefined">第 {{ job.episodeNumber }} 集</span><span>{{ new Date(job.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) }}</span></div>
         <p v-if="job.status === 'failed' && job.retry?.nextAt" class="hint">{{ new Date(job.retry.nextAt).toLocaleTimeString('zh-CN') }} 重试 · 第 {{ job.retry.attempt }} 次</p>
         <p v-if="job.release" class="version-caption">{{ job.release.name }}</p>
+        <p v-if="job.watchSnapshot" class="hint original-target">沿用原配置：{{ job.watchSnapshot.title }}<template v-if="job.watchSnapshot.work.mediaType === 'tv'"> · 第 {{ job.watchSnapshot.seasonNumber }} 季</template> · {{ job.watchSnapshot.binding.sourceAccount.alias }} · {{ job.watchSnapshot.directoryPath || `目录 ${job.watchSnapshot.directoryId}` }}</p>
         <p v-if="retentionLabel(job)" class="hint retention-caption">{{ retentionLabel(job) }}</p>
         <div v-if="job.status === 'uploading'" class="progress"><span :style="{ width: `${Math.max(0, Math.min(100, job.percent))}%` }" /></div>
         <p v-if="job.error" class="task-error" :class="{ muted: !['failed', 'review'].includes(job.status) }">{{ job.error }}</p>
@@ -78,6 +79,7 @@ function retentionLabel(job: WatchJob): string {
 <style scoped>
 .version-caption{font-size:10px;color:var(--muted);margin-top:6px;overflow-wrap:anywhere}
 .retention-caption{margin-top:6px;overflow-wrap:anywhere}
+.original-target{margin-top:6px;overflow-wrap:anywhere}
 .version-review{margin-top:8px}
 .version-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px}
 .version-controls select{flex:1;min-width:160px;width:auto;margin:0;max-width:100%}

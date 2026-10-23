@@ -294,7 +294,7 @@ async function until(fn, timeout = 15000) {
   await until(() => js("(await window.plutoWatch.snapshot()).jobs.some(j => j.episodeNumber === 5 && j.versionReview?.sourceRequired)"), 30000)
   await click('监控目录')
   await until(() => js("document.querySelectorAll('.watch-row').length === 3"))
-  await js("[...document.querySelectorAll('.watch-row')].find(row => row.textContent.includes('来源待确认')).querySelector('.watch-actions button').click()")
+  await js("[...[...document.querySelectorAll('.watch-row')].find(row => row.textContent.includes('来源待确认')).querySelectorAll('.watch-actions button')].find(button => button.textContent === '来源预设').click()")
   await fill('input[aria-label="来源平台"]', 'WEB')
   await fill('select[aria-label="来源类型"]', 'WEB-DL')
   win.setSize(840, 720); nativeTheme.themeSource = 'dark'

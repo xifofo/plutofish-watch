@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { DiskState } from '../shared/model'
+import type { DiskState, WatchJob, WatchRoot } from '../shared/model'
 import { defaultRetention, validateRetention } from '../shared/retention'
 
 export function atomicJSON(path: string, data: unknown): void {
@@ -40,5 +40,12 @@ export class WatchStore {
   save(): void {
     try { atomicJSON(this.path, this.data) }
     catch (error) { this.onError?.(error); throw error }
+  }
+
+  /** 任务归属固定，暂停与恢复仍由当前目录控制。移除目录后不再恢复上传。 */
+  rootFor(job?: WatchJob): WatchRoot | undefined {
+    const root = this.data.watches.find(w => w.id === job?.watchId)
+    if (!root || !job) return undefined
+    return job.watchSnapshot ? { ...job.watchSnapshot, enabled: root.enabled } : root
   }
 }

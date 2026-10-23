@@ -132,9 +132,9 @@ export class DirectoryWatcher {
       if (previous.ignored || !previous.jobId) continue
       const job = jobs.get(previous.jobId)
       if (!job || job.status !== 'waiting' || sig.size < 1 || timestamp - previous.stableSince < root.stableSeconds * 1000) continue
-      job.episodeNumber = root.work.mediaType === 'tv' ? episodeFromName(relative(root.path, path), root.seasonNumber!) : undefined
-      job.status = root.work.mediaType === 'tv' && job.episodeNumber === undefined ? 'review' : 'queued'
-      job.error = job.status === 'review' ? '无法确定本季集号，请确认后入队' : ''
+      job.episodeNumber = root.work.mediaType === 'tv' ? job.episodeNumber ?? episodeFromName(relative(root.path, path), root.seasonNumber!) : undefined
+      job.status = job.versionReview || (root.work.mediaType === 'tv' && job.episodeNumber === undefined) ? 'review' : 'queued'
+      job.error = job.versionReview?.reason || (job.status === 'review' ? '无法确定本季集号，请确认后入队' : '')
       job.updatedAt = date
     }
     for (const [path, previous] of Object.entries(observations)) {

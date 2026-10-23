@@ -18,6 +18,12 @@ import { localFileInUse } from '../../lib/local-file-use.ts'
 const eligible = (draft: PublicationDraft) => !publicationMissing(draft).length
 const safeError = (error: unknown) => error instanceof Error && /^(PlutoFish|当前发布端|成品|文件超过|115 [\u4e00-\u9fff]|发布|另一发布器)/.test(error.message) ? error.message : '上传中断，保留断点；可重试继续'
 
+/** 本地监控没有分集标题时使用集号；不覆盖下载器提供的正式标题。 */
+function episodeTitle(draft: PublicationDraft): string | undefined {
+  if (draft.workTarget.mediaType !== 'tv' || !Number.isInteger(draft.episodeNumber)) return draft.episodeTitle
+  return draft.episodeTitle?.trim() || `第 ${draft.episodeNumber} 集`
+}
+
 export class PublicationWorker {
   private readonly proofs: PublicationProofs
   private readonly cleanup: PublicationCleanup
@@ -32,6 +38,7 @@ export class PublicationWorker {
   private closed = false
   private readonly syncAbort = new AbortController()
   private readonly retryAt = new Map<string, number>()
+  private readonly syncErrors = new Map<string, string>()
 
   constructor(private readonly connection: PlutoFishConnection, private readonly changed: (draft: PublicationDraft) => void,
     options: { directory?: string; factory?: OSSFactory; manual?: boolean; beforeCleanup?: () => void; retention?: RetentionOptions } = {}) {
@@ -42,6 +49,7 @@ export class PublicationWorker {
       this.store.removeCompleted(state)
       this.states.delete(state.draft.fileKey)
       this.retryAt.delete(state.draft.fileKey)
+      this.syncErrors.delete(state.draft.fileKey)
     }, options.beforeCleanup, state => this.retention.deleted(state))
     this.proofs = new PublicationProofs(connection, (state, message) => this.publish(state, message), state => this.store.save(state), state => this.cleanup.missing(state))
     this.retention = new PublicationRetention(connection, state => this.store.save(state), (state, message) => this.publish(state, message), state => this.cleanup.missing(state), options.retention)
@@ -52,6 +60,18 @@ export class PublicationWorker {
   private load(): void {
     if (this.loaded) return
     for (const state of this.store.load()) {
+      // 旧监控清单漏传必填集标题。沿用任务身份和上传断点，用新序号补报，不重建任务。
+      if (state.snapshot.stage !== 'completed' && state.draft.workTarget.mediaType === 'tv') {
+        const title = state.snapshot.episodeTitle?.trim() || episodeTitle(state.draft)
+        if (title && (!state.draft.episodeTitle?.trim() || !state.snapshot.episodeTitle?.trim())) {
+          state.draft.episodeTitle = title
+          if (!state.snapshot.episodeTitle?.trim()) {
+            state.snapshot.episodeTitle = title
+            state.snapshot.sequence++
+          }
+          this.store.save(state)
+        }
+      }
       // 计算线程不能跨进程续跑；已落盘摘要由 publish 恢复，其余重新排队。
       state.draft.ed2k = undefined
       this.states.set(state.draft.fileKey, state)
@@ -61,6 +81,7 @@ export class PublicationWorker {
   /** 入队只保存本地快照，上传必须等待下载器给出已探测成品。 */
   register(draft: PublicationDraft): void {
     if (this.closed || !eligible(draft)) return
+    draft = { ...draft, episodeTitle: episodeTitle(draft) }
     this.load()
     let state = this.states.get(draft.fileKey)
     if (!state) {
@@ -92,7 +113,7 @@ export class PublicationWorker {
       state.draft.ed2k ??= { state: 'queued', pct: 0, link: '' }
     }
     state.draft.progress = { stage: p.stage, phase: state.draft.progress?.phase, downloadPercent: p.downloadPercent, uploadPercent: p.uploadPercent,
-      uploadedBytes: p.uploadedBytes, sizeBytes: p.sizeBytes, error: error || p.errorMessage || '', synced: state.acknowledged >= p.sequence,
+      uploadedBytes: p.uploadedBytes, sizeBytes: p.sizeBytes, error: error || p.errorMessage || this.syncErrors.get(state.draft.fileKey) || '', synced: state.acknowledged >= p.sequence,
       failure: p.stage === 'failed' && state.failure ? { ...state.failure, id: `${p.attempt}:${p.sequence}` } : undefined }
     this.changed(structuredClone(state.draft))
   }
@@ -113,6 +134,7 @@ export class PublicationWorker {
   /** 下载阶段保留真实事件百分比；失败原文可能有外部地址，只上报安全摘要。 */
   event(draft: PublicationDraft, event: JobEvt): void {
     if (this.closed || !eligible(draft)) return
+    draft = { ...draft, episodeTitle: episodeTitle(draft) }
     this.register(draft)
     const state = this.states.get(draft.fileKey)
     if (!state || state.snapshot.stage === 'completed') return
@@ -163,9 +185,12 @@ export class PublicationWorker {
           if (!['applied', 'duplicate', 'ignored'].includes(result.outcome)) throw new Error('PlutoFish 任务回执无效')
           if (result.outcome === 'ignored') throw new Error('PlutoFish 任务序号领先本机，请恢复最新发布清单')
           state.acknowledged = snapshot.sequence
+          this.syncErrors.delete(state.draft.fileKey)
           this.store.save(state); this.publish(state)
         } catch (error) {
           this.retryAt.set(state.draft.fileKey, Date.now() + 15_000)
+          // ED2K 等后台进度刷新不能清掉仍未成功同步的错误。
+          this.syncErrors.set(state.draft.fileKey, safeError(error))
           this.publish(state, safeError(error))
         }
       }

@@ -66,6 +66,7 @@ else {
             case 'searchWorks': value = await svc.searchWorks(payload); break
             case 'directories': value = await svc.connection.directories(payload.sourceAccountId, payload.directoryId, payload.cursor); break
             case 'add': await svc.add(payload); break
+            case 'updateWatch': await svc.updateWatch(payload); break
             case 'setSourcePreset': await svc.setSourcePreset(payload); break
             case 'setRetention': await svc.setRetention(payload); break
             case 'toggleWatch': await svc.toggleWatch(payload); break

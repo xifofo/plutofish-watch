@@ -224,3 +224,4 @@ input[type=checkbox]{width:15px;min-height:15px;margin:1px 0 0;accent-color:var(
 .ed2k-details input{font-family:ui-monospace,monospace;font-size:10px;min-height:30px;padding:5px 8px}
 .sync-label{display:inline-block;margin-right:7px;font-size:10px;color:var(--warning)}
 .watch-actions>div{flex-wrap:wrap}
+@media(max-width:880px){.watch-row{flex-wrap:wrap}.watch-actions{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px}.watch-actions>div{margin-top:0}}

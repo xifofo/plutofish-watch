@@ -1,18 +1,22 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue'
-import type { Snapshot, WatchInput, Release, DirectoryPage } from '../../shared/model'
+import type { Snapshot, WatchInput, WatchRoot, Release, DirectoryPage } from '../../shared/model'
 import Icon from './Icon.vue'
 import WorkPicker from './WorkPicker.vue'
 import SourceFields from './SourceFields.vue'
 
-const props = defineProps<{ state: Snapshot; busy: boolean }>()
+const props = defineProps<{ state: Snapshot; busy: boolean; initial?: WatchRoot }>()
 const emit = defineEmits<{ save: [input: WatchInput]; back: [] }>()
-const form = reactive<WatchInput>({
+const form = reactive<WatchInput>(props.initial ? JSON.parse(JSON.stringify({ ...props.initial, versionMode: props.initial.versionMode ?? 'fixed' })) : {
   path: '', title: '', work: { mediaType: 'tv', tmdbId: '', category: props.state.connection.identity?.categories?.[0]?.value ?? '' },
   sourceAccountId: props.state.connection.identity?.sourceAccount.id ?? '', seasonNumber: 1,
   versionMode: 'auto', releaseId: '', directoryId: '0', directoryPath: '/', includeExisting: true, stableSeconds: 30,
 })
 const choices = ref<Release[]>([]), loading = ref(false), error = ref(''), queried = ref(false)
+if (props.initial && form.versionMode === 'fixed') {
+  choices.value = [{ id: form.releaseId, name: props.initial.releaseName,
+    resolution: props.initial.releaseVersion?.resolution ?? '', dynamicRange: props.initial.releaseVersion?.dynamicRange ?? '', status: 'published' }]
+}
 const cloud = ref<DirectoryPage | null>(null), showCloud = ref(false)
 const sources = computed(() => props.state.connection.identity?.sourceAccounts ?? (props.state.connection.identity ? [props.state.connection.identity.sourceAccount] : []))
 watch(() => [form.work.tmdbId, form.work.mediaType, form.work.category, form.seasonNumber, form.sourceAccountId], () => {
@@ -61,7 +65,8 @@ function submit() {
 </script>
 <template>
   <button class="link back" @click="emit('back')"><Icon name="back" :size="16" />返回监控目录</button>
-  <div class="page-heading"><h1>添加监控目录</h1></div>
+  <div class="page-heading"><h1>{{ initial ? '编辑监控目录' : '添加监控目录' }}</h1></div>
+  <p v-if="initial" class="notice">未开始发布的文件采用新配置；已开始或完成的任务继续沿用原配置。更换本地目录会停止原目录中未开始发布的任务。</p>
   <div v-if="error" role="alert" class="notice error">{{ error }}</div>
   <form @submit.prevent="submit">
     <fieldset :disabled="busy || loading">
@@ -69,7 +74,7 @@ function submit() {
         <div class="section-label"><span class="step">1</span><div><h2>本地目录</h2></div></div>
         <label>目录路径<div class="input-action"><input v-model="form.path" required placeholder="选择包含视频文件的目录" /><button type="button" class="button secondary" @click="chooseDirectory"><Icon name="folder" :size="17" />选择目录</button></div></label>
         <div class="form-grid"><label>文件稳定等待（秒）<input v-model.number="form.stableSeconds" type="number" min="10" max="3600" required /></label>
-          <label class="checkbox"><input v-model="form.includeExisting" type="checkbox" /><span>首次补传历史文件<small>关闭后，仅处理后续新增或修改的文件</small></span></label></div>
+          <label class="checkbox"><input v-model="form.includeExisting" type="checkbox" :disabled="!!initial && form.path === initial.path" /><span>首次补传历史文件<small>{{ initial && form.path === initial.path ? '原目录的历史文件请在列表中点击“补传历史”' : '关闭后，仅处理后续新增或修改的文件' }}</small></span></label></div>
       </section>
       <section class="panel form-section">
         <div class="section-label"><span class="step">2</span><div><h2>作品与版本</h2></div></div>
@@ -99,7 +104,7 @@ function submit() {
           <div class="form-footer"><button type="button" class="button secondary" @click="showCloud = false">关闭</button><button type="button" class="button primary" @click="selectCloud">选用当前目录</button></div>
         </div>
       </section>
-      <div class="form-footer"><span class="hint">自动上传 · 保留原文件</span><button class="button primary" type="submit" :disabled="!form.work.tmdbId || !form.title || (form.versionMode !== 'auto' && !form.releaseId)"><Icon name="plus" :size="18" />{{ busy ? '正在保存…' : '创建并开始监控' }}</button></div>
+      <div class="form-footer"><span class="hint">{{ initial ? '保存后保留目录原来的监控或暂停状态' : '自动上传 · 保留原文件' }}</span><button class="button primary" type="submit" :disabled="!form.work.tmdbId || !form.title || (form.versionMode !== 'auto' && !form.releaseId)"><Icon :name="initial ? 'check' : 'plus'" :size="18" />{{ busy ? '正在保存…' : initial ? '保存修改' : '创建并开始监控' }}</button></div>
     </fieldset>
   </form>
 </template>

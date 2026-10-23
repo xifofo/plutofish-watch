@@ -52,8 +52,15 @@ export class WatchPublisher {
         if (draft.progress?.stage !== 'completed') this.worker.control(draft.fileKey, 'pause')
         continue
       }
-      if (job.changed || ['cancelled', 'failed'].includes(job.status)) continue
       if (draft.progress?.stage !== 'completed') {
+        if (job.changed || job.status === 'cancelled') {
+          this.worker.control(draft.fileKey, 'cancel')
+          continue
+        }
+        if (job.status === 'failed') {
+          this.worker.control(draft.fileKey, 'pause')
+          continue
+        }
         this.worker.control(draft.fileKey, 'pause')
         job.status = job.manuallyPaused ? 'paused' : 'queued'
       }
@@ -66,9 +73,13 @@ export class WatchPublisher {
     const job = this.store.data.jobs.find(j => j.fileKey === draft.fileKey && !j.changed)
     if (!job || !draft.progress) return
     const progress = draft.progress
+    // 两份记录可能在异常退出时先后落盘。旧进度不能撤销已保存的取消或失败决定；
+    // 恢复只能从显式入队开始，已完成的上传回执仍按事实接收。
+    if (job.status === 'cancelled' && progress.stage !== 'completed') { delete job.retry; return }
+    if (job.status === 'failed' && !['failed', 'completed', 'cancelled'].includes(progress.stage)) return
     // 恢复与重试先核对文件；旧暂停/失败快照的同步回执不能吞掉待核对队列。
     if (!job.preparationError && !(['paused', 'failed'].includes(progress.stage) && ['queued', 'preparing'].includes(job.status) && !job.manuallyPaused)) {
-      job.status = progress.stage as WatchJob['status']
+      job.status = job.manuallyPaused && !['completed', 'cancelled'].includes(progress.stage) ? 'paused' : progress.stage as WatchJob['status']
     }
     job.percent = progress.uploadPercent; job.phase = progress.phase
     job.synced = progress.synced
@@ -107,7 +118,7 @@ export class WatchPublisher {
   }
 
   private eligible(root?: WatchRoot): boolean {
-    return !!root?.enabled && !this.store.data.uploadsPaused && this.connection.ready && !this.closed && !this.fatalError
+    return !!root?.enabled && !!this.store.data.watches.find(w => w.id === root.id)?.enabled && !this.store.data.uploadsPaused && this.connection.ready && !this.closed && !this.fatalError
   }
 
   async tick(): Promise<void> {
@@ -122,7 +133,7 @@ export class WatchPublisher {
     if (this.preparing || this.store.data.uploadsPaused) return
     const job = this.store.data.jobs.find(j => j.status === 'queued' && this.eligible(this.store.data.watches.find(w => w.id === j.watchId)))
     if (!job) return
-    const root = this.store.data.watches.find(w => w.id === job.watchId)!
+    const root = this.store.rootFor(job)!
     const abort = new AbortController()
     const promise = this.prepare(root, job, abort.signal).finally(() => { this.preparing = undefined })
     this.preparing = { jobId: job.id, abort, promise }
@@ -163,7 +174,7 @@ export class WatchPublisher {
             : { name: version!.name, key: key!, version: version! }
           // 新版本登记后查得目录 ID，将先前同键任务归一，避免跨目录/重命名绕过去重。
           if (selected && key) for (const previous of this.store.data.jobs) {
-            const previousRoot = this.store.data.watches.find(w => w.id === previous.watchId)
+            const previousRoot = this.store.rootFor(previous)
             if (previous.release?.key !== key || !previousRoot) continue
             previous.release.id = selected.id
             previous.targetKey = targetKey(previousRoot, previous.episodeNumber, selected.id)
@@ -185,14 +196,14 @@ export class WatchPublisher {
       const key = job.fileKey ?? stableKey('gvs-f1', [root.binding.publisherId, job.targetKey, hash.sha1, hash.size, job.id])
       // 相同目标、集号与完整内容重复出现时，只保留一个发布任务。
       const sameTarget = (j: WatchJob) => {
-        const bound = this.store.data.watches.find(w => w.id === j.watchId)
+        const bound = this.store.rootFor(j)
         const id = j.release?.id ?? j.release?.key ?? bound?.releaseId
         return (j.targetKey ?? (bound && id ? targetKey(bound, j.episodeNumber, id) : undefined)) === job.targetKey
       }
       const other = this.store.data.jobs.find(j => j.id !== job.id && sameTarget(j) && j.sha1 === hash.sha1
         && j.signature.size === hash.size && !j.changed && j.status !== 'cancelled')
       if (other) {
-        const oldRoot = this.store.data.watches.find(w => w.id === other.watchId)
+        const oldRoot = this.store.rootFor(other)
         const available = oldRoot?.enabled && await safeFile(oldRoot.path, other.path).then(sig => sameSignature(sig, other.signature)).catch(() => false)
         if (available) {
           job.status = 'duplicate'; job.error = other.status === 'failed' ? '相同内容已有失败任务，请重试原任务' : '相同内容已处理或正在队列中'; job.sha1 = hash.sha1
@@ -227,7 +238,8 @@ export class WatchPublisher {
         version: job.release.version,
         workTarget: root.work, title: root.title, categoryLabel: root.work.category, kind: 'video',
         directoryId: root.directoryId, directoryPath: root.directoryPath, seasonNumber: root.seasonNumber,
-        episodeNumber: job.episodeNumber, output: job.path, measured, updatedAt: new Date().toISOString(),
+        episodeNumber: job.episodeNumber, episodeTitle: root.work.mediaType === 'tv' ? `第 ${job.episodeNumber} 集` : undefined,
+        output: job.path, measured, updatedAt: new Date().toISOString(),
       }
       this.worker.register(draft)
       this.worker.control(key, 'resume')

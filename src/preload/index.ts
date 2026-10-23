@@ -16,6 +16,7 @@ const api: WatchAPI = {
   releases: input => invoke('releases', input),
   directories: input => invoke('directories', input),
   add: input => invoke('add', input),
+  updateWatch: input => invoke('updateWatch', input),
   setSourcePreset: input => invoke('setSourcePreset', input),
   setRetention: input => invoke('setRetention', input),
   toggleWatch: id => invoke('toggleWatch', id),

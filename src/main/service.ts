@@ -16,6 +16,7 @@ import { WatchPublisher } from './publisher'
 import { findProbe, probeAvailable } from './probe'
 import { WatchConnection, validateWatchedFile } from './connection'
 import { searchWorks } from './work-search'
+import { applyWatchEdit } from './watch-edit'
 
 export class WatchService {
   readonly store: WatchStore
@@ -57,9 +58,12 @@ export class WatchService {
 
   async start(): Promise<void> {
     this.ffprobeAvailable = await probeAvailable(findProbe(this.store.data.ffprobe))
+    if (this.stopped) return
     this.publisher.start()
     this.watcher.start()
-    if (this.connection.view().hasKey) {
+    // 窗口先于视频检测就绪；用户已发起连接时，不再用启动校验取消新连接或查询。
+    const connection = this.connection.view()
+    if (connection.hasKey && connection.status === 'idle') {
       try { await this.connection.verify(); this.connection.monitor() } catch { /* 登录失败仍可查看本地任务。 */ }
     }
     this.changed()
@@ -134,6 +138,40 @@ export class WatchService {
     return this.watcher.backfill(id)
   }
 
+  async updateWatch(raw: Parameters<WatchAPI['updateWatch']>[0]): Promise<void> {
+    if (this.fatalError || this.stopped) throw new Error(this.fatalError || '客户端已停止')
+    const root = this.store.data.watches.find(w => w.id === raw?.id)
+    if (!root) throw new Error('监控目录不存在')
+    const input = validateInput(raw.watch, this.connection.view())
+    const path = await canonicalRoot(input.path)
+    if (within(path, this.directory) || within(this.directory, path)) throw new Error('不能监控应用自身的数据目录或其父目录')
+    if (this.store.data.watches.some(w => w.id !== root.id && (within(w.path, path) || within(path, w.path)))) throw new Error('监控目录不能重复或互相嵌套')
+    const releases = await this.releases(input)
+    const release = releases.find(r => r.id === input.releaseId)
+    if (input.versionMode !== 'auto' && !release) throw new Error('版本已变化，请重新查询并选择')
+    const binding = bindingFor(this.connection.view(), input.sourceAccountId)
+    const enabled = root.enabled
+    const next = { ...root, ...input, path, binding, enabled,
+      includeExisting: path === root.path ? root.includeExisting : input.includeExisting,
+      releaseName: input.versionMode === 'auto' ? '自动归类' : release!.name,
+      releaseVersion: release ? { name: release.name, resolution: release.resolution, dynamicRange: release.dynamicRange } : undefined }
+    // 先完成验证，再停止旧扫描和读文件操作；保存期间不允许新任务取得一半更新的配置。
+    root.enabled = false
+    try {
+      await this.watcher.quiesce(root.id)
+      await this.publisher.pause(root.id)
+      applyWatchEdit(this.store, root, next)
+    } finally {
+      if (!this.fatalError) {
+        root.enabled = enabled
+        this.store.save()
+        if (enabled) this.publisher.resume(root.id)
+        this.watcher.refresh(); this.changed()
+      }
+    }
+    if (enabled) await this.watcher.scanOne(root)
+  }
+
   async setSourcePreset(input: Parameters<WatchAPI['setSourcePreset']>[0]): Promise<void> {
     if (this.fatalError) throw new Error(this.fatalError)
     const root = this.store.data.watches.find(w => w.id === input?.id)
@@ -192,14 +230,15 @@ export class WatchService {
   async job(input: Parameters<WatchAPI['job']>[0]): Promise<void> {
     const job = this.store.data.jobs.find(j => j.id === input?.id)
     if (!job) throw new Error('任务不存在')
-    const root = this.store.data.watches.find(w => w.id === job.watchId)
+    const root = this.store.rootFor(job)
     if (input.action === 'pause' && !['completed', 'duplicate', 'cancelled'].includes(job.status)) {
       job.manuallyPaused = true
+      job.status = 'paused'; this.store.save()
       await this.publisher.stopJob(job, 'pause')
-      job.status = 'paused'
     } else if (input.action === 'cancel' && !['completed', 'duplicate', 'cancelled'].includes(job.status)) {
-      await this.publisher.stopJob(job, 'cancel')
       job.status = 'cancelled'; job.manuallyPaused = true; delete job.retry
+      this.store.save()
+      await this.publisher.stopJob(job, 'cancel')
     } else if (input.action === 'confirmSource') {
       if (!root || root.versionMode !== 'auto' || job.changed || job.fileKey || job.status !== 'review' || !job.versionReview?.sourceRequired) throw new Error('此任务无需确认来源')
       if (!sameSignature(await safeFile(root.path, job.path), job.signature)) throw new Error('文件已变化，请重新扫描')
@@ -227,14 +266,17 @@ export class WatchService {
     } else if (['resume', 'confirm'].includes(input.action)) {
       if (!root || job.changed || !['failed', 'paused', 'review'].includes(job.status)) throw new Error('当前任务不能恢复，请重新扫描')
       if (!sameSignature(await safeFile(root.path, job.path), job.signature)) throw new Error('文件已变化，请重新扫描')
-      if (job.versionReview) throw new Error('请先选择版本或刷新版本列表')
       if (root.work.mediaType === 'tv') {
         const episode = input.episodeNumber ?? job.episodeNumber
-        if (!Number.isInteger(episode) || episode! < 0 || episode! > 100000) throw new Error('请填写 0–100000 的集号')
+        if ((episode !== undefined || input.action === 'confirm' || job.fileKey)
+          && (!Number.isInteger(episode) || episode! < 0 || episode! > 100000)) throw new Error('请填写 0–100000 的集号')
+        if (job.fileKey && episode !== job.episodeNumber) throw new Error('已登记任务不能修改集号')
         job.episodeNumber = episode
       }
       if (job.retry) delete job.retry.nextAt
-      job.status = 'queued'; job.manuallyPaused = false; job.error = ''
+      job.status = job.fileKey ? 'queued' : 'waiting'; job.manuallyPaused = false; job.error = ''
+      // 尚未登记的文件仍需通过当前稳定窗口；季号变化后可回到人工集号确认。
+      if (!job.fileKey && root.enabled) await this.watcher.scanOne(root)
     } else throw new Error('此状态不支持该操作')
     this.store.save(); this.changed()
   }

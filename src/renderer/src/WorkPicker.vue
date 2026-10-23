@@ -8,6 +8,7 @@ const tmdbId = defineModel<string>('tmdbId', { required: true })
 const emit = defineEmits<{ select: [] }>()
 const query = ref(''), loading = ref(false), error = ref('')
 const page = ref<WorkPage | null>(null), selected = ref<WorkOption | null>(null), manual = ref(false)
+if (tmdbId.value && title.value) selected.value = { tmdbId: tmdbId.value, title: title.value, originalTitle: '' }
 let generation = 0
 
 function resetResults() {
@@ -42,13 +43,16 @@ function select(item: WorkOption) {
 function toggleManual() {
   clear(); manual.value = !manual.value
 }
+function editSelected() {
+  resetResults(); selected.value = null; manual.value = true
+}
 </script>
 <template>
   <div class="work-picker">
     <template v-if="selected">
       <div class="selected-work">
         <div><strong>{{ selected.title }}</strong><small>{{ selected.year ?? '年份未知' }} · {{ mediaType === 'tv' ? '剧集' : '电影' }} · TMDB {{ selected.tmdbId }}</small></div>
-        <button type="button" class="link" @click="clear">重新选择</button>
+        <div class="selected-actions"><button type="button" class="link" @click="editSelected">修改信息</button><button type="button" class="link" @click="clear">重新选择</button></div>
       </div>
     </template>
     <template v-else>
@@ -93,6 +97,7 @@ function toggleManual() {
 .work-pages{display:flex;justify-content:space-between;align-items:center;font-size:10px;padding:12px 14px;color:var(--muted)}
 .selected-work{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px;background:var(--accent-soft);border-radius:9px}
 .selected-work>div{min-width:0}.selected-work .link{flex-shrink:0}
+.selected-actions{display:flex;gap:12px;flex-wrap:wrap;justify-content:flex-end;flex-shrink:0}
 .manual-toggle{margin-top:12px;font-size:10px}
 .manual-work{display:grid;grid-template-columns:1fr 1fr;gap:20px}
 @media(max-width:900px){.manual-work{grid-template-columns:1fr}}

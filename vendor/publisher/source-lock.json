@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "https://github.com/xifofo/gvs-tui",
-  "baseRevision": "3f4fd832ce47bd214ec765f414158a0a40bb76cb",
+  "baseRevision": "48fd5ef8fcb3052a9aa5455291a6fb447cfaf7c2",
   "includesUncommittedChanges": false,
   "modifiedFiles": [],
   "entries": [
@@ -12,7 +12,7 @@
   "files": {
     "src/integrations/plutofish/client.ts": "b90568fb89ac2837b53ed2fe170e31cb328e50cfc95204deab6bd8234be82f9f",
     "src/integrations/plutofish/config.ts": "4bac3782b62b09eb4e7a25a36085e47e909575d26df5f35410897bbd1094feb3",
-    "src/integrations/plutofish/connection.ts": "18f672ad38a4bc406f51355c8340b4ea62860d5c0728edd5362d5ab44cab2b31",
+    "src/integrations/plutofish/connection.ts": "6493225f283d6718ce144e6d84984c212d1337aa0715017d6668477e7d452cc8",
     "src/integrations/plutofish/measured-release.ts": "0de038856def3a59e16bc04a3b3871e8615c1c35c4069f95f4c92e30c44d2def",
     "src/integrations/plutofish/oss-upload.ts": "e73f6d66ebde1eb23a68d66615e4970d435cd6e77e4cc1a28bfb9d8205f0c41f",
     "src/integrations/plutofish/publication-cleanup.ts": "969db991e22d2dcc31273c5d633369c55aa2128e0afc77fd03582e215148eaa7",
@@ -22,7 +22,7 @@
     "src/integrations/plutofish/publication-store.ts": "770188c988ad33f5d2a047b717940256284a12b4760755ad53661a6c3469b90a",
     "src/integrations/plutofish/publication-types.ts": "7e2fffc85a4820d9a1c8356d76139151f7d58fd099b38e1d9bc0267cc6925003",
     "src/integrations/plutofish/publication-version.ts": "375b3ea02427409e148e581e13a81e09e804d6da0f81a3410c95b76fe0df9424",
-    "src/integrations/plutofish/publication-worker.ts": "fd9f6af4a53af757fc7ff8ffb939a65575b6c33e4b19162daf31fd61f26fb7ee",
+    "src/integrations/plutofish/publication-worker.ts": "6934295500b3ffee179204bffb1ec785f7ec66b082e047aa0ae1de1447f0430b",
     "src/integrations/plutofish/release-selection.ts": "53a543e2ea3847c51aa6cf7918e9675dbc792aa965c406566f5a880956e089d3",
     "src/integrations/plutofish/release-specs.ts": "0bd8de991935da2f736e7d8bb9f8059fbd8286b0b2d114f8f64154fda2818060",
     "src/integrations/plutofish/retention-settings.ts": "d97b0f36bd86af8344ec8cda4a3b2054ee7f9323a268f638de728ff7e4296666",

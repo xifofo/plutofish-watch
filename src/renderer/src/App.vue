@@ -1,4 +1,5 @@
 <script setup lang="ts">
+const appVersion = __APP_VERSION__
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import type { Snapshot, WatchInput, WatchRoot, ReleaseSource } from '../../shared/model'
 import Icon from './Icon.vue'
@@ -16,6 +17,11 @@ const state = ref<Snapshot>({ connection: { url: '', hasKey: false, status: 'idl
 const view = ref('overview'), error = ref(''), notice = ref(''), busy = ref(false), connecting = ref(false)
 watch(view, async () => { notice.value = '';  await nextTick(); window.scrollTo(0, 0) })
 const sourceRoot = ref<WatchRoot>(), sourceDraft = ref<ReleaseSource>({})
+const editing = ref<WatchRoot>()
+function edit(root: WatchRoot) {
+  editing.value = JSON.parse(JSON.stringify(root)); error.value = ''
+  view.value = connected.value ? 'edit' : 'settings'
+}
 function editSource(root: WatchRoot) { sourceRoot.value = root; sourceDraft.value = { ...root.sourcePreset } }
 async function saveSource() { await run(async () => { await api.setSourcePreset({ id: sourceRoot.value!.id, source: { ...sourceDraft.value } }); sourceRoot.value = undefined }) }
 const credentials = reactive({ url: '', key: '' })
@@ -35,7 +41,15 @@ async function run(fn: () => Promise<unknown>) {
 }
 async function backfill(id: string) { await run(async () => { const count = await api.backfill(id); notice.value = count ? `已加入 ${count} 个历史文件` : '没有待补传的历史文件' }) }
 function add() { view.value = connected.value ? 'new' : 'settings' }
-async function save(input: WatchInput) { await run(async () => { await api.add(input); view.value = 'watches' }) }
+async function save(input: WatchInput) {
+  const id = view.value === 'edit' ? editing.value?.id : undefined
+  await run(async () => {
+    if (id) await api.updateWatch({ id, watch: input })
+    else await api.add(input)
+    editing.value = undefined; view.value = 'watches'
+    if (id) await nextTick().then(() => { notice.value = '目录配置已更新' })
+  })
+}
 async function connect() {
   if (connecting.value) return
   connecting.value = true; error.value = ''
@@ -55,9 +69,9 @@ onUnmounted(() => unsubscribe?.())
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand"><img class="brand-mark" :src="brandIcon" width="48" height="48" alt="" aria-hidden="true" :draggable="false" /><div>PlutoFish<span>WATCH</span></div></div>
-      <nav><button v-for="n in nav" :key="n.id" :class="{ active: view === n.id || (n.id === 'watches' && view === 'new') }" @click="view = n.id; error = ''"><Icon :name="n.icon" :size="19" />{{ n.title }}<span v-if="n.id === 'jobs' && attention" class="nav-count">{{ attention }}</span></button></nav>
+      <nav><button v-for="n in nav" :key="n.id" :class="{ active: view === n.id || (n.id === 'watches' && ['new', 'edit'].includes(view)) }" @click="view = n.id; error = ''"><Icon :name="n.icon" :size="19" />{{ n.title }}<span v-if="n.id === 'jobs' && attention" class="nav-count">{{ attention }}</span></button></nav>
       <div class="sidebar-bottom"><div class="connection-dot" :class="{ online: connected }" /><div><strong>{{ connected ? state.connection.identity?.name : state.connection.reconnect ? '等待自动重连' : '尚未连接' }}</strong></div><button class="icon-button" aria-label="连接设置" @click="view = 'settings'"><Icon name="settings" :size="18" /></button></div>
-      <div class="sidebar-version">v0.1</div>
+      <div class="sidebar-version">v{{ appVersion }}</div>
     </aside>
     <main>
       <div class="topbar"><span><span class="tiny-dot" :class="{ online: active > 0 }" />{{ active ? `${active} 个目录监控中` : '目录监控' }}</span><span class="retention-note"><Icon name="check" :size="13" />{{ state.retention.enabled ? `完成满 ${state.retention.days} 天清理` : '保留原文件' }}</span></div>
@@ -66,7 +80,7 @@ onUnmounted(() => unsubscribe?.())
         <div v-if="error" class="notice error dismissible" role="alert">{{ error }}<button class="icon-button" aria-label="关闭错误" @click="error = ''"><Icon name="close" :size="16" /></button></div>
         <div v-if="notice" class="notice dismissible" role="status">{{ notice }}<button class="icon-button" aria-label="关闭提示" @click="notice = ''"><Icon name="close" :size="16" /></button></div>
         <div v-if="state.connection.reconnect" class="notice" role="status">连接中断，正在自动恢复 · {{ new Date(state.connection.reconnect.nextAt).toLocaleTimeString('zh-CN') }} 重试</div>
-        <template v-if="view === 'new'"><DirectoryForm :state="state" :busy="busy" @save="save" @back="view = 'watches'" /></template>
+        <template v-if="view === 'new' || view === 'edit'"><DirectoryForm :key="view + (editing?.id ?? '')" :initial="view === 'edit' ? editing : undefined" :state="state" :busy="busy" @save="save" @back="view = 'watches'" /></template>
         <template v-else-if="view === 'settings'">
           <div class="page-heading"><h1>连接与设置</h1></div>
           <section class="panel settings-panel"><div class="section-label"><div class="file-icon"><Icon name="cloud" /></div><div><h2>PlutoFish 服务</h2></div></div>
@@ -98,7 +112,7 @@ onUnmounted(() => unsubscribe?.())
             <section v-if="sourceRoot" class="panel form-section"><h2>{{ sourceRoot.title }} · 来源预设</h2><SourceFields v-model="sourceDraft" :disabled="busy" /><p class="hint">文件名优先；保存后重试缺少来源的任务，已确认版本保持不变。</p><div class="form-footer"><button class="button secondary" :disabled="busy" @click="sourceRoot = undefined">取消</button><button class="button primary" :disabled="busy" @click="saveSource">保存来源预设</button></div></section>
             <section v-if="state.watches.length && !sourceRoot" class="panel">
               <div class="panel-heading"><h2>监控目录 <span class="count">{{ state.watches.length }}</span></h2><button v-if="view === 'overview'" class="link" @click="view = 'watches'">管理目录 <Icon name="arrow" :size="15" /></button></div>
-              <article v-for="root in (view === 'overview' ? state.watches.slice(0, 4) : state.watches)" :key="root.id" class="watch-row"><div class="watch-folder"><Icon name="folder" :size="24" /></div><div class="watch-details"><h3>{{ root.title }} <span v-if="root.work.mediaType === 'tv'">第 {{ root.seasonNumber }} 季</span></h3><div class="path" :title="root.path">{{ root.path }}</div><div class="watch-tags"><span>{{ root.releaseName }}</span><span v-if="root.sourcePreset?.platform || root.sourcePreset?.type">预设 {{ [root.sourcePreset.platform, root.sourcePreset.type].filter(Boolean).join(' · ') }}</span><span>{{ root.binding.sourceAccount.alias }} → {{ root.directoryPath || root.directoryId }}</span></div><p v-if="root.error" class="task-error">{{ root.error }}</p><small v-else>{{ root.lastScan ? `上次扫描 ${new Date(root.lastScan).toLocaleTimeString('zh-CN')}` : '等待首次扫描' }} · 稳定等待 {{ root.stableSeconds }} 秒</small></div><div class="watch-actions"><span class="badge" :class="root.error ? 'review' : root.enabled ? 'completed' : 'paused'">{{ root.error ? '等待目录恢复' : root.enabled ? '监控中' : '已暂停' }}</span><div><button v-if="root.versionMode === 'auto'" class="link" :disabled="busy" @click="editSource(root)">来源预设</button><button class="link" :disabled="busy || !root.enabled" @click="backfill(root.id)">补传历史</button><button class="link" :disabled="busy" @click="run(() => api.toggleWatch(root.id))">{{ root.enabled ? '暂停' : '恢复' }}</button><button class="link muted" :disabled="busy" @click="run(() => api.removeWatch(root.id))">移除</button></div></div></article>
+              <article v-for="root in (view === 'overview' ? state.watches.slice(0, 4) : state.watches)" :key="root.id" class="watch-row"><div class="watch-folder"><Icon name="folder" :size="24" /></div><div class="watch-details"><h3>{{ root.title }} <span v-if="root.work.mediaType === 'tv'">第 {{ root.seasonNumber }} 季</span></h3><div class="path" :title="root.path">{{ root.path }}</div><div class="watch-tags"><span>{{ root.releaseName }}</span><span v-if="root.sourcePreset?.platform || root.sourcePreset?.type">预设 {{ [root.sourcePreset.platform, root.sourcePreset.type].filter(Boolean).join(' · ') }}</span><span>{{ root.binding.sourceAccount.alias }} → {{ root.directoryPath || root.directoryId }}</span></div><p v-if="root.error" class="task-error">{{ root.error }}</p><small v-else>{{ root.lastScan ? `上次扫描 ${new Date(root.lastScan).toLocaleTimeString('zh-CN')}` : '等待首次扫描' }} · 稳定等待 {{ root.stableSeconds }} 秒</small></div><div class="watch-actions"><span class="badge" :class="root.error ? 'review' : root.enabled ? 'completed' : 'paused'">{{ root.error ? '等待目录恢复' : root.enabled ? '监控中' : '已暂停' }}</span><div><button class="link" :disabled="busy" @click="edit(root)">编辑</button><button v-if="root.versionMode === 'auto'" class="link" :disabled="busy" @click="editSource(root)">来源预设</button><button class="link" :disabled="busy || !root.enabled" @click="backfill(root.id)">补传历史</button><button class="link" :disabled="busy" @click="run(() => api.toggleWatch(root.id))">{{ root.enabled ? '暂停' : '恢复' }}</button><button class="link muted" :disabled="busy" @click="run(() => api.removeWatch(root.id))">移除</button></div></div></article>
             </section>
           </template>
           <section v-if="view === 'jobs' || (view === 'overview' && (state.watches.length || state.jobs.length))" class="panel jobs-panel"><div class="panel-heading"><h2>{{ view === 'overview' ? '最近的文件' : '文件队列' }} <span class="count">{{ state.jobs.length }}</span></h2><button v-if="view === 'overview'" class="link" @click="view = 'jobs'">查看全部 <Icon name="arrow" :size="15" /></button></div><JobList :jobs="state.jobs" :retention="state.retention" :busy="busy" :compact="view === 'overview'" @action="input => run(() => api.job(input))" @reveal="id => run(() => api.reveal(id))" /></section>

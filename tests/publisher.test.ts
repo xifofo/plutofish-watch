@@ -15,6 +15,7 @@ import { safeFile } from '../src/main/files'
 import { findProbe, probeFile } from '../src/main/probe'
 import type { WatchRoot, WatchJob } from '../src/shared/model'
 import { DirectoryWatcher } from '../src/main/watcher'
+import { applyWatchEdit } from '../src/main/watch-edit'
 
 const disposers: Array<() => Promise<unknown>> = []
 afterEach(async () => { for (const dispose of disposers.splice(0).reverse()) await dispose() })
@@ -43,6 +44,12 @@ async function setup(options: { check?: (body: any) => unknown; proofs?: boolean
     const injected = options.reply?.(path, payload)
     if (injected === 'disconnect') { req.socket.destroy(); return }
     if (injected) { res.writeHead(injected.status ?? 200, { 'Content-Type': 'application/json', ...injected.headers }).end(JSON.stringify(injected.body ?? {})); return }
+    // 对齐服务端 TaskReport.validate / validateEpisode，不能让假服务接受线上会拒绝的剧集。
+    if (['tasks/report', 'files/report'].includes(path) && payload.episodeNumber !== undefined && !payload.episodeTitle?.trim()) {
+      res.writeHead(422, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: {
+        code: 'VALIDATION_FAILED', fieldErrors: { title: '内容为空、字符无效或长度超出限制' },
+      } })); return
+    }
     let result: unknown
     if (path === 'me') result = { id: 'publisher-1', name: '测试发布端', kind: 'publisher', sourceAccount: { id: 'source-1', name: '离线源', alias: 'main', provider: '115' }, categories: [{ value: 'tv', label: '剧集' }] }
     else if (path === 'files/check') result = options.check?.(payload) ?? { status: 'missing' }
@@ -114,6 +121,55 @@ async function until(publisher: WatchPublisher, ready: () => boolean) {
   }
   throw new Error('本地发布任务未完成')
 }
+
+test('旧版缺集标题任务升级后沿用任务键，完成任务上报与资源登记', async () => {
+  const f = await setup()
+  await f.publisher.tick()
+  const key = f.job.fileKey!
+  expect(key).toBeTruthy()
+  await f.publisher.close()
+  const path = join(f.temp, 'publications', key.replace(':', '-') + '.state.json')
+  const saved = JSON.parse(await readFile(path, 'utf8'))
+  delete saved.draft.episodeTitle; delete saved.snapshot.episodeTitle
+  const sequence = saved.snapshot.sequence
+  await writeFile(path, JSON.stringify(saved))
+  const publisher = new WatchPublisher(f.store, f.connection, f.temp, () => {}, e => { throw e })
+  disposers.push(() => publisher.close())
+  publisher.start()
+  await until(publisher, () => f.job.status === 'completed' && f.job.synced === true)
+  expect(f.job.fileKey).toBe(key)
+  const reports = f.calls.filter(c => c.path === 'tasks/report')
+  expect(reports.length).toBeGreaterThan(0)
+  expect(reports.every(c => c.body.episodeTitle === '第 1 集' && c.body.taskKey === key)).toBe(true)
+  expect(reports[0].body.sequence).toBeGreaterThan(sequence)
+  expect(f.calls.find(c => c.path === 'files/report')!.body.episodeTitle).toBe('第 1 集')
+  expect(f.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'start')).toHaveLength(1)
+})
+
+test('编辑目录后已登记任务恢复时仍使用原作品、版本和网盘目录', async () => {
+  const f = await setup()
+  await f.publisher.tick()
+  const key = f.job.fileKey!
+  await f.publisher.pause(f.root.id)
+  applyWatchEdit(f.store, f.root, { ...f.root, work: { ...f.root.work, tmdbId: '456' }, directoryId: '99', releaseId: 'b'.repeat(32) })
+  f.publisher.resume(f.root.id)
+  await until(f.publisher, () => f.job.status === 'completed' && f.job.synced === true)
+  expect(f.job.fileKey).toBe(key)
+  const done = f.calls.find(c => c.path === 'files/report')!.body
+  expect(done.releaseTarget.workTarget.tmdbId).toBe('123')
+  expect(done.releaseTarget.existingReleaseId).toBe('a'.repeat(32))
+  expect(f.calls.find(c => c.path === 'uploads/prepare' && c.body.action === 'start')!.body.directoryId).toBe('42')
+})
+
+test('422 提示指出接口及字段，不暴露响应中的凭据、地址和未知字段', async () => {
+  const f = await setup({ reply: path => path === 'tasks/report' ? { status: 422, body: { error: {
+    code: 'VALIDATION_FAILED', message: 'private-secret-url', fieldErrors: { title: 'private-token', 'secret-field': 'private-value' },
+  } } } : undefined })
+  await f.publisher.tick(); await f.publisher.tick()
+  expect(f.job.error).toBe('PlutoFish 任务上报失败：作品或集标题校验未通过（HTTP 422）')
+  expect(f.job.synced).toBe(false)
+  expect(f.calls.some(c => c.path === 'uploads/prepare')).toBe(false)
+})
 
 test('按天清理只删除已完成且 ED2K 已同步的原视频，保留历史与链接并通知服务端', async () => {
   let now = Date.now()
@@ -608,6 +664,27 @@ test('用户暂停或取消的未完成任务，重启后不能自动恢复上�
     expect(restored.data.jobs[0].status).toBe(action === 'pause' ? 'paused' : 'cancelled')
     expect(f.calls.some(c => c.path === 'uploads/prepare')).toBe(false)
   }
+})
+
+test.each(['cancelled', 'paused', 'failed', 'changed'] as const)('异常退出后本地停止决定优先于旧上传快照：%s', async status => {
+  const f = await setup()
+  await f.publisher.tick()
+  await f.publisher.close()
+  // 模拟两份持久化记录间中断：发布清单仍为 processing，本地已记录停止决定。
+  f.job.status = status === 'changed' ? 'cancelled' : status
+  f.job.manuallyPaused = status === 'paused' || status === 'cancelled'
+  f.job.changed = status === 'changed'
+  f.job.error = status === 'failed' ? '恢复前校验失败' : '保留停止原因'
+  f.store.save()
+  const restored = new WatchStore(f.store.path)
+  const publisher = new WatchPublisher(restored, f.connection, f.temp, () => {}, e => { throw e })
+  disposers.push(() => publisher.close())
+  publisher.start()
+  await publisher.tick(); await publisher.tick()
+  expect(restored.data.jobs[0].status).toBe(status === 'changed' ? 'cancelled' : status)
+  if (status === 'failed') expect(restored.data.jobs[0].error).toBe('恢复前校验失败')
+  expect(f.calls.some(c => c.path === 'uploads/prepare')).toBe(false)
+  expect(f.calls.some(c => c.path === 'files/report')).toBe(false)
 })
 
 test('媒体校验之后被同大小内容替换，上传请求前拦截', async () => {
