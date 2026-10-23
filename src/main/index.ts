@@ -2,6 +2,8 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, shell, Tray } from 'electron'
 import { join } from 'node:path'
 import { WatchService } from './service'
+import createEd2kWorker from './ed2k-worker?nodeWorker'
+import { createED2KComputer } from '../../vendor/publisher/src/integrations/plutofish/ed2k-computer'
 
 let window: BrowserWindow | undefined, tray: Tray | undefined, service: WatchService | undefined
 let quitting = false, closing: Promise<void> | undefined
@@ -28,7 +30,7 @@ else {
         broadcastTimer = undefined
         if (window && !window.isDestroyed()) window.webContents.send('watch:state', service!.snapshot())
       }, 150)
-    })
+    }, createED2KComputer(path => createEd2kWorker({ workerData: { path } })))
     window = new BrowserWindow({
       width: 1240, height: 840, minWidth: 840, minHeight: 640, title: 'PlutoFish Watch', icon: appIcon,
       backgroundColor: nativeTheme.shouldUseDarkColors ? '#16191f' : '#f6f7fa', titleBarStyle: 'hiddenInset',

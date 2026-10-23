@@ -393,11 +393,12 @@ test('分片断网后自动续传原 uploadId，已确认第一片不重传，ED
       return undefined
     },
   })
-  await appendFile(f.file, Buffer.alloc(8 * 1024 * 1024))
+  await appendFile(f.file, Buffer.alloc(16 * 1024 * 1024))
   f.job.signature = await safeFile(f.root.path, f.file)
   await until(f.publisher, () => f.job.status === 'failed')
   expect(f.job.retry?.nextAt).toBe(now + 100)
   expect(puts).toEqual([1, 2])
+  expect(parts.get(1)?.Size).toBe(String(16 * 1024 * 1024))
   const key = f.job.fileKey
   now += 100
   await until(f.publisher, () => f.job.status === 'completed' && f.job.ed2kSaved === true && f.job.synced === true)

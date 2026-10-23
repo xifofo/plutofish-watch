@@ -17,6 +17,7 @@ import { findProbe, probeAvailable } from './probe'
 import { WatchConnection, validateWatchedFile } from './connection'
 import { searchWorks } from './work-search'
 import { applyWatchEdit } from './watch-edit'
+import type { RetentionOptions } from '../../vendor/publisher/src/integrations/plutofish/publication-retention'
 
 export class WatchService {
   readonly store: WatchStore
@@ -27,7 +28,7 @@ export class WatchService {
   private ffprobeAvailable = false
   private stopped = false
 
-  constructor(private directory: string, private changed: () => void) {
+  constructor(private directory: string, private changed: () => void, compute?: RetentionOptions['compute']) {
     this.store = new WatchStore(join(directory, 'watch-state.json'))
     const credentials = join(directory, 'connection.json')
     let wasReady = false
@@ -51,7 +52,7 @@ export class WatchService {
       },
     })
     this.connection.validateFile = validateWatchedFile(this.store)
-    this.publisher = new WatchPublisher(this.store, this.connection, directory, changed, error => this.fail(error))
+    this.publisher = new WatchPublisher(this.store, this.connection, directory, changed, error => this.fail(error), { compute })
     this.watcher = new DirectoryWatcher(this.store, changed, job => this.publisher.stopJob(job, 'cancel'), error => this.fail(error))
     this.store.onError = error => this.fail(error)
   }

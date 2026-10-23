@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import type { WatchJob, WatchAPI, ReleaseSource, LocalRetentionSettings } from '../../shared/model'
 import Icon from './Icon.vue'
 import SourceFields from './SourceFields.vue'
+import { uploadBytes, uploadRemaining } from '../../../vendor/publisher/src/integrations/plutofish/upload-display'
 import transferTrayArt from './assets/transfer-tray.png'
 const props = defineProps<{ jobs: WatchJob[]; retention: LocalRetentionSettings; busy: boolean; compact?: boolean }>()
 const emit = defineEmits<{ action: [input: Parameters<WatchAPI['job']>[0]]; reveal: [id: string] }>()
@@ -16,6 +17,7 @@ const filtered = computed(() => [...props.jobs].reverse().filter(j =>
   && j.relativePath.toLowerCase().includes(search.value.toLowerCase())))
 const visible = computed(() => filtered.value.slice(0, props.compact ? 6 : page.value * 40))
 const size = (n: number) => n >= 1073741824 ? `${(n / 1073741824).toFixed(2)} GB` : `${(n / 1048576).toFixed(1)} MB`
+const percent = (job: WatchJob) => Math.max(0, Math.min(100, job.transfer && job.signature.size > 0 ? job.transfer.sentBytes / job.signature.size * 100 : job.percent))
 const phase = (j: WatchJob) => j.status === 'failed' && j.retry?.nextAt ? '等待自动重试' : j.versionReview && j.status === 'review' ? (j.versionReview.sourceRequired ? '待确认来源' : '待确认版本') : j.reused && j.status === 'completed' ? '已复用' : ({ checking: '检查是否已上传', hashing: '计算文件校验', uploading: j.reused ? '复用已有文件' : '上传中', verifying: '核验网盘文件', reporting: '登记资源' })[j.phase ?? ''] || labels[j.status] || j.status
 const ed2kLabel = (j: WatchJob) => j.ed2k?.state === 'running' ? `ED2K ${Math.floor(j.ed2k.pct * 100)}%`
   : j.ed2k?.state === 'done' ? (j.ed2kSaved ? 'ED2K 已同步' : 'ED2K 待同步')
@@ -49,7 +51,13 @@ function retentionLabel(job: WatchJob): string {
         <p v-if="job.release" class="version-caption">{{ job.release.name }}</p>
         <p v-if="job.watchSnapshot" class="hint original-target">沿用原配置：{{ job.watchSnapshot.title }}<template v-if="job.watchSnapshot.work.mediaType === 'tv'"> · 第 {{ job.watchSnapshot.seasonNumber }} 季</template> · {{ job.watchSnapshot.binding.sourceAccount.alias }} · {{ job.watchSnapshot.directoryPath || `目录 ${job.watchSnapshot.directoryId}` }}</p>
         <p v-if="retentionLabel(job)" class="hint retention-caption">{{ retentionLabel(job) }}</p>
-        <div v-if="job.status === 'uploading'" class="progress"><span :style="{ width: `${Math.max(0, Math.min(100, job.percent))}%` }" /></div>
+        <div v-if="job.status === 'uploading'" class="progress" role="progressbar" aria-label="上传进度" :aria-valuenow="percent(job)" aria-valuemin="0" aria-valuemax="100"><span :style="{ width: `${percent(job)}%` }" /></div>
+        <div v-if="job.status === 'uploading' && job.phase === 'uploading' && !job.reused" class="transfer-stats" aria-label="上传速度与进度">
+          <strong>{{ job.transfer ? `${uploadBytes(job.transfer.bytesPerSecond)}/s` : '测速中…' }}</strong>
+          <span>已发送 {{ uploadBytes(job.transfer?.sentBytes ?? job.uploadedBytes ?? 0) }} / {{ uploadBytes(job.signature.size) }}</span>
+          <span>{{ job.transfer?.sentBytes === job.signature.size ? '等待分片确认' : `剩余${uploadRemaining(job.transfer?.etaSeconds)}` }}</span>
+          <span v-if="job.transfer && job.transfer.rateLimit > 0" class="account-limit">账号共享上限 {{ uploadBytes(job.transfer.rateLimit) }}/s</span>
+        </div>
         <p v-if="job.error" class="task-error" :class="{ muted: !['failed', 'review'].includes(job.status) }">{{ job.error }}</p>
         <details v-if="job.ed2k" class="ed2k-details"><summary>{{ ed2kLabel(job) }}</summary><input v-if="job.ed2k.link" readonly :value="job.ed2k.link" aria-label="ED2K 链接" @focus="($event.target as HTMLInputElement).select()" /><p v-else-if="job.ed2k.message" class="hint">{{ job.ed2k.message }}</p></details>
         <div v-if="job.status === 'review' && job.versionReview" class="version-review">
@@ -64,7 +72,7 @@ function retentionLabel(job: WatchJob): string {
         </div>
         <div v-else-if="job.status === 'review'" class="review-row"><input v-model="episode[job.id]" type="number" min="0" max="100000" placeholder="集号" :aria-label="`${job.relativePath} 的集号`" /><button class="button secondary small" :disabled="busy || !String(episode[job.id] ?? '').trim()" @click="emit('action', { id: job.id, action: 'confirm', episodeNumber: Number(episode[job.id]) })">确认入队</button></div>
       </div>
-      <div class="task-end"><span v-if="job.synced === false" class="sync-label">待同步</span><span class="badge" :class="job.status">{{ phase(job) }}{{ job.status === 'uploading' ? ` ${job.percent.toFixed(1)}%` : '' }}</span>
+      <div class="task-end"><span v-if="job.synced === false" class="sync-label">待同步</span><span class="badge" :class="job.status">{{ phase(job) }}{{ job.status === 'uploading' ? ` ${percent(job).toFixed(1)}%` : '' }}</span>
         <div v-if="!compact" class="task-actions">
           <button v-if="['failed', 'paused'].includes(job.status)" class="link" :disabled="busy" @click="emit('action', { id: job.id, action: 'resume' })">{{ job.status === 'failed' ? (job.retry?.nextAt ? '立即重试' : '重试') : '继续' }}</button>
           <button v-if="['queued', 'preparing', 'processing', 'uploading'].includes(job.status) || (job.status === 'failed' && job.retry?.nextAt)" class="link" :disabled="busy" @click="emit('action', { id: job.id, action: 'pause' })">暂停</button>
@@ -77,6 +85,9 @@ function retentionLabel(job: WatchJob): string {
   <button v-if="!compact && filtered.length > visible.length" class="button secondary load-more" @click="page++">加载更多（剩余 {{ filtered.length - visible.length }} 个）</button>
 </template>
 <style scoped>
+.transfer-stats{display:flex;flex-wrap:wrap;align-items:baseline;gap:5px 12px;margin-top:7px;font-size:10px;color:var(--secondary);font-variant-numeric:tabular-nums}
+.transfer-stats strong{color:var(--accent);font-size:11px}
+.account-limit{color:var(--muted)}
 .version-caption{font-size:10px;color:var(--muted);margin-top:6px;overflow-wrap:anywhere}
 .retention-caption{margin-top:6px;overflow-wrap:anywhere}
 .original-target{margin-top:6px;overflow-wrap:anywhere}

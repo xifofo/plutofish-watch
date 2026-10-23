@@ -1,5 +1,6 @@
 import type { ReleaseSource } from '../../vendor/publisher/src/integrations/plutofish/release-specs'
 import type { RetentionProgress } from '../../vendor/publisher/src/integrations/plutofish/publication-types'
+import type { UploadTransfer } from '../../vendor/publisher/src/integrations/plutofish/upload-traffic'
 export type { ReleaseSource }
 /** IPC 只传业务快照，凭据及上传临时密钥不出主进程。 */
 export type Source = { id: string; alias: string; name: string; provider?: string; enabled?: boolean }
@@ -40,6 +41,7 @@ export type WatchJob = {
   watchSnapshot?: WatchRoot
   status: JobStatus; createdAt: string; updatedAt: string; episodeNumber?: number
   fileKey?: string; sha1?: string; percent: number; phase?: string; error: string
+  uploadedBytes?: number; transfer?: UploadTransfer
   /** 跨目录和重命名的内容归属；不使用本地路径或监控目录 ID。 */
   targetKey?: string; duplicateOf?: string; reused?: boolean
   /** 失败次数与下次重试时间落盘；主动暂停、取消或文件改变不会自动入队。 */

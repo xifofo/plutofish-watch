@@ -1,6 +1,8 @@
-/** 持久化任务快照 Outbox；单队列完成 115 上传、远端核验和目录登记，退出不丢分片。 */
+/** 持久化任务快照 Outbox；两路上传与单路预处理独立运行，退出不丢分片。 */
 import { PublisherError, retryableError } from './retry'
 import { basename } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { UploadBudget, type UploadTransfer } from './upload-traffic.ts'
 import type { JobEvt } from '../../lib/job-event.ts'
 import { PlutoFishConnection } from './connection.ts'
 import { publicationDirectory } from './publication-store.ts'
@@ -34,18 +36,23 @@ export class PublicationWorker {
   private timer?: ReturnType<typeof setInterval>
   private syncing = false
   private proofRunning?: Promise<void>
-  private running?: { key: string; abort: AbortController; promise: Promise<void> }
+  private readonly running = new Map<string, { abort: AbortController; promise: Promise<void> }>()
+  private preparing?: { key: string; abort: AbortController; promise: Promise<void> }
+  private readonly prepared = new Set<string>()
+  private readonly transfers = new Map<string, UploadTransfer>()
+  private readonly budgets = new Map<string, UploadBudget>()
+  private readonly clientId = randomUUID()
   private closed = false
   private readonly syncAbort = new AbortController()
   private readonly retryAt = new Map<string, number>()
   private readonly syncErrors = new Map<string, string>()
 
-  constructor(private readonly connection: PlutoFishConnection, private readonly changed: (draft: PublicationDraft) => void,
+  constructor(private readonly connection: PlutoFishConnection, private readonly changed: (draft: PublicationDraft, transient?: boolean) => void,
     options: { directory?: string; factory?: OSSFactory; manual?: boolean; beforeCleanup?: () => void; retention?: RetentionOptions } = {}) {
     this.store = new PublicationStore(options.directory ?? publicationDirectory())
     this.factory = options.factory
     this.cleanup = new PublicationCleanup(connection, state => {
-      if (this.states.get(state.draft.fileKey) !== state || this.running?.key === state.draft.fileKey || this.proofs.isUsing(state) || localFileInUse(state.draft.output)) return
+      if (this.states.get(state.draft.fileKey) !== state || this.running.has(state.draft.fileKey) || this.preparing?.key === state.draft.fileKey || this.proofs.isUsing(state) || localFileInUse(state.draft.output)) return
       this.store.removeCompleted(state)
       this.states.delete(state.draft.fileKey)
       this.retryAt.delete(state.draft.fileKey)
@@ -106,7 +113,7 @@ export class PublicationWorker {
     return [...this.states.values()].filter(s => s.draft.output).map(s => structuredClone(s.draft))
   }
 
-  private publish(state: PublicationState, error = ''): void {
+  private publish(state: PublicationState, error = '', transient = false): void {
     const p = state.snapshot
     if (state.retention?.ed2k) state.draft.ed2k = { state: 'done', pct: 1, link: state.retention.ed2k }
     else if (state.draft.output && ['processing', 'uploading', 'completed'].includes(p.stage)) {
@@ -115,7 +122,11 @@ export class PublicationWorker {
     state.draft.progress = { stage: p.stage, phase: state.draft.progress?.phase, downloadPercent: p.downloadPercent, uploadPercent: p.uploadPercent,
       uploadedBytes: p.uploadedBytes, sizeBytes: p.sizeBytes, error: error || p.errorMessage || this.syncErrors.get(state.draft.fileKey) || '', synced: state.acknowledged >= p.sequence,
       failure: p.stage === 'failed' && state.failure ? { ...state.failure, id: `${p.attempt}:${p.sequence}` } : undefined }
-    this.changed(structuredClone(state.draft))
+    const view = structuredClone(state.draft)
+    // 发送中的字节未获 OSS 确认，仅通过内存视图推送；快照序号和断点仍按整片回执落盘。
+    const transfer = this.transfers.get(state.draft.fileKey)
+    if (transfer && p.stage === 'uploading' && view.progress?.phase === 'uploading') view.progress.transfer = { ...transfer }
+    this.changed(view, transient)
   }
 
   private update(state: PublicationState, patch: Partial<TaskSnapshot>): void {
@@ -155,7 +166,10 @@ export class PublicationWorker {
     this.load()
     const state = this.states.get(key)
     if (!state || state.snapshot.stage === 'completed') return
-    if (this.running?.key === key) this.running.abort.abort()
+    this.running.get(key)?.abort.abort()
+    if (this.preparing?.key === key) this.preparing.abort.abort()
+    this.prepared.delete(key)
+    this.transfers.delete(key)
     if (action === 'pause' || action === 'cancel') this.update(state, { stage: action === 'pause' ? 'paused' : 'cancelled', errorMessage: '' })
     else {
       this.retryAt.delete(key)
@@ -196,12 +210,32 @@ export class PublicationWorker {
       }
       try { this.retention.tick(this.states, this.syncAbort.signal) } catch { /* 无法读取策略或保存状态时不删除成品 */ }
       try { await this.cleanup.tick(this.states, this.syncAbort.signal) } catch { /* 清理失败保留原记录，下轮或重启后继续 */ }
-      if (!this.running && !this.closed) {
-        const state = [...this.states.values()].find(s => ['processing', 'uploading'].includes(s.snapshot.stage) && s.draft.output && s.acknowledged >= s.snapshot.sequence && (this.retryAt.get(s.draft.fileKey) ?? 0) <= Date.now())
-        if (state) {
+      if (!this.closed) {
+        const eligible = [...this.states.values()].filter(s => ['processing', 'uploading'].includes(s.snapshot.stage) && s.draft.output && !this.running.has(s.draft.fileKey) && s.acknowledged >= s.snapshot.sequence && (this.retryAt.get(s.draft.fileKey) ?? 0) <= Date.now())
+        for (const state of eligible.filter(s => this.prepared.has(s.draft.fileKey))) {
+          if (this.running.size >= 2) break
+          const key = state.draft.fileKey
+          this.prepared.delete(key)
           const abort = new AbortController()
-          const promise = this.upload(state, abort).catch(() => { this.publish(state, '发布清单保存失败，请检查目录权限') }).finally(() => { this.running = undefined })
-          this.running = { key: state.draft.fileKey, abort, promise }
+          const promise = this.upload(state, abort).catch(() => { this.publish(state, '发布清单保存失败，请检查目录权限') }).finally(() => { this.running.delete(key) })
+          this.running.set(key, { abort, promise })
+        }
+        // 两个上传槽之外，提前串行校验最多两个待上传文件，避免整队列同时抢磁盘。
+        if (!this.preparing && this.prepared.size < 2) {
+          const state = eligible.find(s => !this.running.has(s.draft.fileKey) && !this.prepared.has(s.draft.fileKey))
+          if (state) {
+            const abort = new AbortController(), key = state.draft.fileKey
+            this.phase(state, 'hashing')
+            const promise = fingerprint(state.draft.output, abort.signal).then(() => {
+              if (!abort.signal.aborted && !this.closed) { this.prepared.add(key); this.phase(state, undefined) }
+            }).catch(error => {
+              if (!abort.signal.aborted) {
+                state.failure = { retryable: retryableError(error) }
+                this.update(state, { stage: 'failed', errorMessage: safeError(error) })
+              }
+            }).finally(() => { this.preparing = undefined })
+            this.preparing = { key, abort, promise }
+          }
         }
       }
     } catch (error) {
@@ -216,10 +250,10 @@ export class PublicationWorker {
     let pulse: Promise<void> | undefined
     let heartbeatError: unknown
     const request = async (action: string, extra = {}) => {
-      const reply = await this.connection.request<UploadReply>(draft.binding, 'uploads/prepare', { taskKey: draft.fileKey, action, ...extra }, signal)
+      const reply = await this.connection.request<UploadReply>(draft.binding, 'uploads/prepare', { taskKey: draft.fileKey, clientId: this.clientId, action, ...extra }, signal)
       if (!heartbeat) heartbeat = setInterval(() => {
         if (pulse || signal.aborted) return
-        pulse = this.connection.request(draft.binding, 'uploads/prepare', { taskKey: draft.fileKey, action: 'heartbeat' }, signal)
+        pulse = this.connection.request(draft.binding, 'uploads/prepare', { taskKey: draft.fileKey, clientId: this.clientId, action: 'heartbeat' }, signal)
           .then(() => {}).catch(error => { if (!signal.aborted) { heartbeatError = error; abort.abort() } }).finally(() => { pulse = undefined })
       }, 20_000)
       return reply
@@ -231,7 +265,7 @@ export class PublicationWorker {
       const file = await fingerprint(draft.output, signal)
       if (file.size !== measured.file.size) throw new Error('成品大小与检测记录不一致')
       if (state.checkpoint && (state.checkpoint.file.sha1 !== file.sha1 || state.checkpoint.file.size !== file.size)) throw new Error('成品已改变，不能复用原上传断点')
-      state.checkpoint ??= { file, partSize: Math.max(8 * 1024 * 1024, Math.ceil(file.size / 10000 / (1024 * 1024)) * 1024 * 1024), parts: [] }
+      state.checkpoint ??= { file, partSize: Math.max(16 * 1024 * 1024, Math.ceil(file.size / 10000 / (1024 * 1024)) * 1024 * 1024), parts: [] }
       state.checkpoint.file = file
       this.store.save(state)
       const cp = state.checkpoint
@@ -268,6 +302,17 @@ export class PublicationWorker {
               authorize: () => this.connection.assertBinding(draft.binding),
               credentials: async () => { const reply = await request('credentials'); if (!reply.credentials) throw new Error('115 未返回临时凭据'); return reply.credentials },
               save: () => this.store.save(state), progress: bytes => this.update(state, { uploadedBytes: bytes, uploadPercent: bytes / file.size * 100 }),
+              budgetFor: credentials => {
+                const key = `${draft.binding.url}:${credentials.rateScope || draft.binding.sourceAccount!.id}`
+                let budget = this.budgets.get(key)
+                if (!budget) { budget = new UploadBudget(); this.budgets.set(key, budget) }
+                return budget
+              },
+              transfer: value => {
+                if (value) this.transfers.set(draft.fileKey, value)
+                else this.transfers.delete(draft.fileKey)
+                this.publish(state, '', true)
+              },
             })
           }
         }
@@ -298,22 +343,26 @@ export class PublicationWorker {
       if (heartbeat) clearInterval(heartbeat)
       await pulse
       // 当前 PUT 已结束或取消后释放；断网/撤权时让服务端占用自然过期。
-      await this.connection.request(draft.binding, 'uploads/prepare', { taskKey: draft.fileKey, action: 'release' }, AbortSignal.timeout(5000)).catch(() => {})
+      await this.connection.request(draft.binding, 'uploads/prepare', { taskKey: draft.fileKey, clientId: this.clientId, action: 'release' }, AbortSignal.timeout(5000)).catch(() => {})
     }
   }
 
   async stop(key: string, action: 'pause' | 'cancel'): Promise<void> {
-    const running = this.running?.key === key ? this.running.promise : undefined
+    const running = this.running.get(key)?.promise
+    const preparing = this.preparing?.key === key ? this.preparing.promise : undefined
     this.control(key, action)
     await running
+    await preparing
   }
 
   async close(): Promise<void> {
     this.closed = true
     this.syncAbort.abort()
     if (this.timer) clearInterval(this.timer)
-    this.running?.abort.abort()
-    await this.running?.promise
+    this.preparing?.abort.abort()
+    for (const run of this.running.values()) run.abort.abort()
+    await Promise.all([...this.running.values()].map(run => run.promise))
+    await this.preparing?.promise
     await this.proofRunning
     await this.retention.close()
     // 发送中的快照持久化完成后才释放租约，避免另一个进程拿到旧序号。

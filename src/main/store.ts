@@ -35,10 +35,13 @@ export class WatchStore {
     value.retention = value.retention === undefined ? defaultRetention() : validateRetention(value.retention)
     this.data = value
     // 中断的本地探测重新开始；已有上传清单另由发布器恢复。
-    for (const job of value.jobs) if (job.status === 'preparing') job.status = 'queued'
+    for (const job of value.jobs) {
+      delete job.transfer
+      if (job.status === 'preparing') job.status = 'queued'
+    }
   }
   save(): void {
-    try { atomicJSON(this.path, this.data) }
+    try { atomicJSON(this.path, { ...this.data, jobs: this.data.jobs.map(({ transfer: _transfer, ...job }) => job) }) }
     catch (error) { this.onError?.(error); throw error }
   }
 

@@ -19,6 +19,7 @@ import { matchMeasuredRelease, measuredReleaseVersion } from '../../vendor/publi
 import { tierHeight } from '../../vendor/publisher/src/lib/name'
 import { releaseSource, sourceReviewReason, normalizeRange } from '../../vendor/publisher/src/integrations/plutofish/release-specs'
 import { actualVersionSummary } from '../../vendor/publisher/src/lib/actual-version'
+import type { RetentionOptions } from '../../vendor/publisher/src/integrations/plutofish/publication-retention'
 
 export class WatchPublisher {
   readonly worker: PublicationWorker
@@ -29,10 +30,11 @@ export class WatchPublisher {
   constructor(
     private store: WatchStore, private connection: PlutoFishConnection, directory: string,
     private changed: () => void, private fatal: (error: unknown) => void,
-    private retryOptions: { now?: () => number; baseMs?: number; maxMs?: number; factory?: OSSFactory } = {},
+    private retryOptions: { now?: () => number; baseMs?: number; maxMs?: number; factory?: OSSFactory; compute?: RetentionOptions['compute'] } = {},
   ) {
-    this.worker = new PublicationWorker(connection, draft => this.update(draft), {
+    this.worker = new PublicationWorker(connection, (draft, transient) => this.update(draft, transient), {
       directory: join(directory, 'publications'), factory: retryOptions.factory, manual: true, retention: {
+        compute: retryOptions.compute,
         now: retryOptions.now,
         settings: () => {
           const policy = validateRetention(this.store.data.retention)
@@ -69,7 +71,7 @@ export class WatchPublisher {
     this.timer = setInterval(() => { void this.tick().catch(this.fatal) }, 1000)
   }
 
-  private update(draft: PublicationDraft): void {
+  private update(draft: PublicationDraft, transient = false): void {
     const job = this.store.data.jobs.find(j => j.fileKey === draft.fileKey && !j.changed)
     if (!job || !draft.progress) return
     const progress = draft.progress
@@ -82,6 +84,9 @@ export class WatchPublisher {
       job.status = job.manuallyPaused && !['completed', 'cancelled'].includes(progress.stage) ? 'paused' : progress.stage as WatchJob['status']
     }
     job.percent = progress.uploadPercent; job.phase = progress.phase
+    job.uploadedBytes = progress.uploadedBytes
+    job.transfer = job.status === 'uploading' && job.phase === 'uploading' ? progress.transfer : undefined
+    if (transient) { this.changed(); return }
     job.synced = progress.synced
     job.ed2k = draft.ed2k ? structuredClone(draft.ed2k) : undefined
     job.ed2kSaved = draft.retention?.ed2kSaved ?? false
@@ -131,6 +136,8 @@ export class WatchPublisher {
       }
     }
     if (this.preparing || this.store.data.uploadsPaused) return
+    // 两个传输和两个已准备文件足够衔接；长队列逐步处理，避免反复淘汰摘要缓存或持续抢磁盘。
+    if (this.store.data.jobs.filter(j => ['processing', 'uploading'].includes(j.status) && this.eligible(this.store.rootFor(j))).length >= 4) return
     const job = this.store.data.jobs.find(j => j.status === 'queued' && this.eligible(this.store.data.watches.find(w => w.id === j.watchId)))
     if (!job) return
     const root = this.store.rootFor(job)!

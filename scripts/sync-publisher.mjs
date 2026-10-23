@@ -14,6 +14,7 @@ const entries = [
   'src/integrations/plutofish/publication-worker.ts',
   'src/integrations/plutofish/release-selection.ts',
   'src/lib/ed2k.ts',
+  'src/integrations/plutofish/ed2k-computer.ts',
 ]
 const args = process.argv.slice(2)
 const check = args.includes('--check')

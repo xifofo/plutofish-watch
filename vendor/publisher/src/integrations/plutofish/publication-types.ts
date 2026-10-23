@@ -1,6 +1,8 @@
 /** 本地发布草稿；尚未上传或上报，不包含任何密钥和播放地址。 */
 import type { ReleaseSelection } from './release-selection.ts'
 import type { CompletedMedia } from '../../lib/actual-version.ts'
+import type { UploadTransfer } from './upload-traffic.ts'
+import { uploadBytes, uploadRemaining } from './upload-display'
 
 export type PublicationInput = {
   category: string
@@ -36,7 +38,7 @@ export type PublicationDraft = {
   directoryId?: string
   /** 选择时的展示路径；上传始终使用固定目录 ID。 */
   directoryPath?: string
-  progress?: { stage: string; phase?: 'hashing' | 'uploading' | 'verifying' | 'reporting'; downloadPercent: number; uploadPercent: number; uploadedBytes: number; sizeBytes?: number; error: string; synced: boolean; failure?: { id: string; retryable: boolean; retryAfterMs?: number } }
+  progress?: { stage: string; phase?: 'hashing' | 'uploading' | 'verifying' | 'reporting'; downloadPercent: number; uploadPercent: number; uploadedBytes: number; sizeBytes?: number; error: string; synced: boolean; transfer?: UploadTransfer; failure?: { id: string; retryable: boolean; retryAfterMs?: number } }
   ed2k?: ED2KProgress
   retention?: RetentionProgress
   categoryLabel: string
@@ -74,7 +76,10 @@ export function publicationStatus(draft?: PublicationDraft): string {
   if (draft.progress) {
     const p = draft.progress
     const labels: Record<string, string> = { queued: '等待下载', downloading: '下载中', processing: '成品处理中', hashing: '计算文件校验', uploading: '上传中', paused: '发布已暂停', failed: '发布失败', cancelled: '发布已取消', completed: '已上报资源目录' }
-    return `${labels[p.stage] ?? p.stage}${p.stage === 'uploading' ? ` ${p.uploadPercent.toFixed(1)}%` : ''}${p.error ? ` · ${p.error}` : p.synced ? '' : ' · 等待同步'}`
+    const transfer = p.stage === 'uploading' && p.phase === 'uploading' ? p.transfer : undefined
+    const percent = transfer && p.sizeBytes ? Math.min(100, transfer.sentBytes / p.sizeBytes * 100) : p.uploadPercent
+    const speed = transfer ? ` · ${uploadBytes(transfer.bytesPerSecond)}/s · 已发送 ${uploadBytes(transfer.sentBytes)} / ${uploadBytes(p.sizeBytes ?? 0)} · 剩余${uploadRemaining(transfer.etaSeconds)}` : ''
+    return `${p.phase === 'hashing' ? '计算文件校验' : labels[p.stage] ?? p.stage}${p.stage === 'uploading' ? ` ${percent.toFixed(1)}%` : ''}${speed}${p.error ? ` · ${p.error}` : p.synced ? '' : ' · 等待同步'}`
   }
   if (!draft.output) return '待下载完成检测'
   const media = draft.measured?.media
