@@ -1,4 +1,4 @@
-/** 同一账号的两路上传共享发送预算；分片内的发送进度只用于显示，不作为续传回执。 */
+/** 按服务端返回的 rateScope 共享发送预算；分片内的发送进度只用于显示，不作为续传回执。 */
 import { Readable } from 'node:stream'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -9,7 +9,7 @@ export type UploadTransfer = {
   rateLimit: number
 }
 
-/** 由服务端的账号互斥组保证同一账号只由本进程消费预算；单任务可使用全部空闲额度。 */
+/** 相同 scope 共用额度；跨机器共享槽各有独立 scope 和半额 rate，旧服务仍返回账号 scope。 */
 export class UploadBudget {
   private rate = 0
   private next = 0

@@ -5,6 +5,8 @@ import Icon from './Icon.vue'
 import WorkPicker from './WorkPicker.vue'
 import SourceFields from './SourceFields.vue'
 import DirectoryRecognition from './DirectoryRecognition.vue'
+import DirectoryCreateDialog from './DirectoryCreateDialog.vue'
+import { adjustCreationTarget, creationSegments, directoryCreated, directoryCreationPending } from '../../shared/directory-creation'
 
 const props = defineProps<{ state: Snapshot; busy: boolean; initial?: WatchRoot }>()
 const emit = defineEmits<{ save: [input: WatchInput]; back: [] }>()
@@ -24,7 +26,7 @@ const categories = computed(() => {
 
 /** 只消费可安全回填的结果；重建作品选择器以避免旧类型监听清除新草稿。 */
 function applyRecognition(result: Recognition) {
-  if (props.busy || !result.canAutoFill || !result.workTarget || !result.work) return
+  if (props.busy || loading.value || creationDialog.value || !result.canAutoFill || !result.workTarget || !result.work) return
   form.work = { ...result.workTarget }; form.title = result.work.title
   form.seasonNumber = result.work.mediaType === 'tv' ? result.parsed.seasonNumber : undefined
   recognizedCategory.value = { value: result.workTarget.category, label: result.work.category.label }
@@ -36,11 +38,24 @@ if (props.initial && form.versionMode === 'fixed') {
     resolution: props.initial.releaseVersion?.resolution ?? '', dynamicRange: props.initial.releaseVersion?.dynamicRange ?? '', status: 'published' }]
 }
 const cloud = ref<DirectoryPage | null>(null), showCloud = ref(false)
+const canCreate = computed(() => !!form.title.trim() && /^[1-9]\d{0,9}$/.test(form.work.tmdbId) && Number(form.work.tmdbId) <= 2147483647
+  && !!categories.value.find(c => c.value === form.work.category) && !!form.sourceAccountId
+  && (form.work.mediaType === 'movie' || (Number.isInteger(form.seasonNumber) && form.seasonNumber! >= 0 && form.seasonNumber! <= 10000)))
+const alreadyCreated = computed(() => directoryCreated(form))
+const creationPending = computed(() => directoryCreationPending(form))
+const segments = computed(() => creationSegments(form, categories.value.find(c => c.value === form.work.category)?.label ?? form.work.category))
+const createPreview = computed(() => alreadyCreated.value ? form.directoryPath : [form.directoryPath.replace(/\/+$/, ''), ...segments.value].join('/'))
+const creationKey = () => JSON.stringify([form.sourceAccountId, form.work.mediaType, form.work.tmdbId, form.seasonNumber, form.directoryId])
+const creationScope = () => JSON.stringify([props.state.connection.url, props.state.connection.identity?.id,
+  form.sourceAccountId, form.work, form.title, form.seasonNumber, form.directoryId, form.directoryPath, form.directoryCreation])
+const creationDialog = ref<{ input: WatchInput; categoryLabel: string; scope: string }>()
+watch(creationScope, () => { creationDialog.value = undefined })
 const sources = computed(() => props.state.connection.identity?.sourceAccounts ?? (props.state.connection.identity ? [props.state.connection.identity.sourceAccount] : []))
 watch(() => [form.work.tmdbId, form.work.mediaType, form.work.category, form.seasonNumber, form.sourceAccountId], () => {
   choices.value = []; form.releaseId = ''; queried.value = false
 })
-watch(() => form.sourceAccountId, () => { form.directoryId = '0'; form.directoryPath = '/'; cloud.value = null })
+watch(() => form.sourceAccountId, () => { delete form.directoryCreation; form.directoryId = '0'; form.directoryPath = '/'; cloud.value = null })
+watch(creationKey, () => adjustCreationTarget(form))
 watch(() => form.versionMode, () => {
   form.releaseId = form.versionMode === 'fixed' && choices.value.length === 1 ? choices.value[0].id : ''
 })
@@ -73,22 +88,36 @@ async function browse(id = form.directoryId, cursor = '') {
 }
 function selectCloud() {
   if (!cloud.value) return
+  if (form.directoryCreation && cloud.value.path.at(-1)!.id !== form.directoryCreation.directoryId) delete form.directoryCreation
   form.directoryId = cloud.value.path.at(-1)!.id
   form.directoryPath = '/' + cloud.value.path.slice(1).map(p => p.name).join('/')
   showCloud.value = false
 }
+function manualDirectory(event: Event) {
+  if (form.directoryCreation && (event.target as HTMLInputElement).value !== form.directoryCreation.directoryId) delete form.directoryCreation
+}
+function createFolders() {
+  if (!canCreate.value || alreadyCreated.value || recognitionPending.value || loading.value || props.busy) return
+  creationDialog.value = { input: JSON.parse(JSON.stringify(form)), scope: creationScope(),
+    categoryLabel: categories.value.find(c => c.value === form.work.category)?.label ?? form.work.category }
+}
+function createdFolders(input: WatchInput) {
+  if (!creationDialog.value || creationDialog.value.scope !== creationScope()) return
+  form.directoryId = input.directoryId; form.directoryPath = input.directoryPath; form.directoryCreation = input.directoryCreation
+  creationDialog.value = undefined; showCloud.value = false
+}
 function submit() {
-  if (recognitionPending.value) return
+  if (recognitionPending.value || creationPending.value) return
   emit('save', JSON.parse(JSON.stringify({ ...form, seasonNumber: form.work.mediaType === 'tv' ? form.seasonNumber : undefined })))
 }
 </script>
 <template>
-  <button class="link back" @click="emit('back')"><Icon name="back" :size="16" />返回监控目录</button>
+  <button class="link back" :disabled="!!creationDialog" @click="emit('back')"><Icon name="back" :size="16" />返回监控目录</button>
   <div class="page-heading"><h1>{{ initial ? '编辑监控目录' : '添加监控目录' }}</h1></div>
   <p v-if="initial" class="notice">未开始发布的文件采用新配置；已开始或完成的任务继续沿用原配置。更换本地目录会停止原目录中未开始发布的任务。</p>
   <div v-if="error" role="alert" class="notice error">{{ error }}</div>
   <form @submit.prevent="submit">
-    <fieldset :disabled="busy || loading">
+    <fieldset :disabled="busy || loading || !!creationDialog">
       <section class="panel form-section">
         <div class="section-label"><span class="step">1</span><div><h2>本地目录</h2></div></div>
         <label>目录路径<div class="input-action"><input v-model="form.path" required placeholder="选择包含视频文件的目录" /><button type="button" class="button secondary" @click="chooseDirectory"><Icon name="folder" :size="17" />选择目录</button></div></label>
@@ -97,7 +126,7 @@ function submit() {
       </section>
       <section class="panel form-section">
         <div class="section-label"><span class="step">2</span><div><h2>作品与版本</h2></div></div>
-        <DirectoryRecognition v-if="!initial" :path="form.path" :source-account-id="form.sourceAccountId" :connection-key="`${state.connection.url}:${state.connection.identity?.id ?? ''}`" :draft-key="draftKey" :can-replace="(!form.title && !form.work.tmdbId) || lastRecognitionDraft === draftKey" :disabled="busy || loading" @pending="recognitionPending = $event" @apply="applyRecognition" />
+        <DirectoryRecognition v-if="!initial" :path="form.path" :source-account-id="form.sourceAccountId" :connection-key="`${state.connection.url}:${state.connection.identity?.id ?? ''}`" :draft-key="draftKey" :can-replace="(!form.title && !form.work.tmdbId) || lastRecognitionDraft === draftKey" :disabled="busy || loading || !!creationDialog" @pending="recognitionPending = $event" @apply="applyRecognition" />
         <div class="form-grid">
           <label>资源分类<select v-model="form.work.category" required><option v-for="c in categories" :key="c.value" :value="c.value">{{ c.label }}</option></select></label>
           <label>作品类型<select v-model="form.work.mediaType"><option value="tv">剧集</option><option value="movie">电影</option></select></label>
@@ -114,8 +143,14 @@ function submit() {
       </section>
       <section class="panel form-section">
         <div class="section-label"><span class="step">3</span><div><h2>网盘目标</h2></div></div>
-        <div class="form-grid"><label>目标目录 ID<input v-model="form.directoryId" required pattern="0|[1-9][0-9]{0,39}" /></label><label>目标路径<div class="input-action"><input v-model="form.directoryPath" placeholder="/" /><button type="button" class="button secondary" @click="browse()">浏览网盘</button></div></label></div>
+        <div class="form-grid"><label>目标目录 ID<input v-model="form.directoryId" required pattern="0|[1-9][0-9]{0,39}" @input="manualDirectory" /></label><label>目标路径<div class="input-action"><input v-model="form.directoryPath" placeholder="/" /><button type="button" class="button secondary" @click="browse()">浏览网盘</button></div></label></div>
         <p class="hint">0 为根目录；文件平铺上传，不复制本地目录结构。</p>
+        <div v-if="canCreate" class="directory-create">
+          <div class="directory-preview"><span>{{ alreadyCreated ? '已创建并选为上传目录' : '默认创建路径' }}</span><p>{{ createPreview }}</p></div>
+          <button type="button" class="button secondary" :disabled="alreadyCreated || recognitionPending" @click="createFolders"><Icon :name="alreadyCreated ? 'check' : 'folder'" :size="17" />{{ alreadyCreated ? '文件夹已创建' : '在网盘创建文件夹' }}</button>
+          <p class="hint">{{ alreadyCreated ? '后续使用这个目录 ID，作品改名不会更改文件夹。' : '先选择上级目录，确认完整路径后创建并选为上传位置。' }}</p>
+          <p v-if="creationPending" class="hint warning">请创建本季文件夹或手动选择上传目录。</p>
+        </div>
         <div v-if="showCloud && cloud" class="cloud-picker">
           <div class="cloud-path"><button v-for="p in cloud.path" :key="p.id" type="button" class="link" @click="browse(p.id)">{{ p.name || '/' }} /</button></div>
           <button v-for="item in cloud.items" :key="item.id" type="button" class="folder-option" @click="browse(item.id)"><Icon name="folder" />{{ item.name }}<Icon name="arrow" :size="15" /></button>
@@ -124,10 +159,15 @@ function submit() {
           <div class="form-footer"><button type="button" class="button secondary" @click="showCloud = false">关闭</button><button type="button" class="button primary" @click="selectCloud">选用当前目录</button></div>
         </div>
       </section>
-      <div class="form-footer"><span class="hint">{{ initial ? '保存后保留目录原来的监控或暂停状态' : '自动上传 · 保留原文件' }}</span><button class="button primary" type="submit" :disabled="recognitionPending || !form.work.tmdbId || !form.title || (form.versionMode !== 'auto' && !form.releaseId)"><Icon :name="initial ? 'check' : 'plus'" :size="18" />{{ busy ? '正在保存…' : initial ? '保存修改' : '创建并开始监控' }}</button></div>
+      <div class="form-footer"><span class="hint">{{ initial ? '保存后保留目录原来的监控或暂停状态' : '自动上传 · 保留原文件' }}</span><button class="button primary" type="submit" :disabled="recognitionPending || creationPending || !form.work.tmdbId || !form.title || (form.versionMode !== 'auto' && !form.releaseId)"><Icon :name="initial ? 'check' : 'plus'" :size="18" />{{ busy ? '正在保存…' : initial ? '保存修改' : '创建并开始监控' }}</button></div>
     </fieldset>
   </form>
+  <DirectoryCreateDialog v-if="creationDialog" :input="creationDialog.input" :category-label="creationDialog.categoryLabel" @close="creationDialog = undefined" @created="createdFolders" />
 </template>
 <style scoped>
 .version-mode{margin:20px 0 10px}
+.directory-create{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+.directory-preview{background:var(--surface-subtle);border-radius:7px;padding:12px 14px;margin-bottom:12px;overflow-wrap:anywhere}
+.directory-preview span{font-size:11px;color:var(--muted)}
+.directory-preview p{font-size:13px;color:var(--text);margin-top:5px}
 </style>

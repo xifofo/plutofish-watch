@@ -26,10 +26,16 @@ export type Release = { id: string; name: string; resolution: string; dynamicRan
 export type WatchInput = {
   path: string; title: string; sourceAccountId: string; work: Work; seasonNumber?: number
   releaseId: string; directoryId: string; directoryPath: string
+  /** 手动创建的界面记忆；不参与上传解析，也不会自动创建或恢复目录。 */
+  directoryCreation?: DirectoryCreation
   /** 旧记录省略时保持固定版本，新增目录默认可选自动归类。 */
   versionMode?: 'fixed' | 'auto'
   sourcePreset?: ReleaseSource
   includeExisting: boolean; stableSeconds: number
+}
+export type DirectoryCreation = {
+  sourceAccountId: string; mediaType: Work['mediaType']; tmdbId: string; seasonNumber?: number
+  parentId: string; parentPath: string; directoryId: string; directoryPath: string; workDirectoryId: string; workDirectoryPath: string
 }
 export type WatchRoot = WatchInput & {
   id: string; binding: Binding; releaseName: string; releaseVersion?: { name: string; resolution: string; dynamicRange: string }; enabled: boolean
@@ -91,6 +97,7 @@ export interface WatchAPI {
   recognizeFile(input: { sourceAccountId: string; fileName: string }): Promise<Recognition>
   releases(input: Omit<WatchInput, 'path' | 'includeExisting' | 'stableSeconds' | 'releaseId'>): Promise<Release[]>
   directories(input: { sourceAccountId: string; directoryId: string; cursor?: string }): Promise<DirectoryPage>
+  createDirectories(input: { sourceAccountId: string; directoryId: string; segments: string[] }): Promise<DirectoryPage>
   add(input: WatchInput): Promise<void>
   updateWatch(input: { id: string; watch: WatchInput }): Promise<void>
   setSourcePreset(input: { id: string; source: ReleaseSource }): Promise<void>

@@ -2,6 +2,8 @@
 
 独立的可视化目录监控客户端。每个根目录预先绑定一个 PlutoFish 作品、季（剧集）和网盘目标，版本可自动归类或固定选择；发现本地新视频后，等待文件稳定，再通过 PlutoFish 完成上传、核验和资源登记。
 
+0.1.6 增加手动创建网盘文件夹：识别作品后选择上级目录、确认完整路径，再绑定返回的目录 ID；名称修改和重启保持原位置，新季可复用作品目录。同步发布引擎的上传限速修复与最新命名兼容逻辑。
+
 ## 启动
 
 独立仓库：`xifofo/plutofish-watch`。在本仓库根目录执行：
@@ -91,12 +93,14 @@ Windows 包面向 Intel/AMD 64 位系统（x64）；当前 Electron 运行时不
 1. 在“连接与设置”填写 PlutoFish 服务地址和完整发布端凭据。客户端通过发布端接口鉴权，仅显示授权源网盘。
 2. 确保本机安装 `ffprobe`，或在设置中选择其可执行文件。客户端不会自动下载执行工具。macOS 自动查找 Homebrew 路径，Linux 查找标准路径，Windows 支持 `C:\ffmpeg\bin\ffprobe.exe` 或手动选择。
 3. 添加本地目录，选择资源分类、电影／剧集、季号和源账号，按片名搜索 TMDB。选中后自动填入作品名称和 TMDB ID；仍可直接填写 ID。新增目录默认“自动归类”，无匹配时自动新增版本；“固定版本”需要选择已有版本。已有监控记录保留固定版本行为。
-4. 选择网盘目标目录，或填入目录 ID（`0` 为根目录）。浏览网盘会通过 PlutoFish 读取真实网盘目录。
+4. 选择网盘目标目录，或填入目录 ID（`0` 为根目录）。识别或选定有效 TMDB 作品后，可在下方点击“在网盘创建文件夹”，在弹窗中选择上级目录，核对完整路径后点击“确认创建文件夹”。按预览创建 `分类/作品名称 {tmdbid-ID}/season 01`（电影没有季目录），成功后才把返回的实际目录 ID 选为上传位置。弹窗浏览、取消或创建失败保留原上传目标，失败可原地重试。浏览和手动创建会通过 PlutoFish 访问真实网盘；识别、保存监控和上传不会自动创建目录。
 5. 设置文件稳定等待时间（默认 30 秒、最小 10 秒），选择“首次补传历史文件”，点击“创建并开始监控”。如首次未勾选，之后可在监控目录点击“补传历史”，只把当初忽略的文件加入队列；重复点击不会重复建任务。
 6. 如需释放本地空间，在“连接与设置 → 本地文件”开启“自动删除本地文件”，设置保留天数并保存。默认关闭，天数预填 7 天，可设 1–365 天。
 7. 已创建的目录点击“编辑”，可修改路径、作品、季号、版本方式、来源预设、源账号、网盘目标和稳定等待时间。未开始发布的文件重新按新配置归类；已开始或完成的任务保存原配置，重试与重启不改变归属。目录原来的监控／暂停状态和人工暂停决定保持不变。更换本地路径会停止旧路径中尚未开始发布的任务，并按“首次补传历史文件”重新扫描新路径；仍在原路径的已登记文件继续原任务，但不再参与新路径的自动清理。原目录的历史补传仍使用列表中的“补传历史”。
 
 支持文件格式：MP4、MKV、M4V、MOV、AVI、TS、M2TS、WebM。第一版只发布视频，不发布字幕、NFO 或图片。
+
+手动创建后记住实际目录 ID，改作品标题或分类不会改名，重复点击或编辑、重启后不会在原目录下再套一层。同作品切换季号时，弹窗默认选择已知作品目录，仅创建本季；也可另选上级目录，确认预览后按新位置创建完整层级。改作品会回到原父目录，切源账号需要重新选择目标。手动选择其他网盘目录后采用新位置。目录被删除时会显示上传错误，不自动重建。
 
 剧集按 `S01E02`、`E02`、`EP02`、`第2集` 识别集号。多集合并、季号不匹配或无法确定时进入“待确认集号”。目录绑定不会根据后续文件自动切换作品或季。
 
@@ -147,7 +151,7 @@ Windows 包面向 Intel/AMD 64 位系统（x64）；当前 Electron 运行时不
 
 这些文件不进入 Git。数据解析或落盘失败时停止处理，不以空队列覆盖损坏记录。`--watch-data=/绝对路径` 可为本地验收指定隔离数据目录。
 
-客户端使用 `publisher/me`、`publisher/tmdb/search`、`publisher/releases/query`、`publisher/directories`、`publisher/tasks/report`、`publisher/uploads/prepare`、`publisher/files/check`、`publisher/files/report`、`publisher/files/ed2k` 和 `publisher/range-proofs/*`。上传通过现有临时 OSS 凭据直传，PlutoFish 负责鉴权、目标账号与上传调度、核验和目录登记。
+客户端使用 `publisher/me`、`publisher/tmdb/search`、`publisher/releases/query`、`publisher/directories`、`publisher/directories/create`、`publisher/tasks/report`、`publisher/uploads/prepare`、`publisher/files/check`、`publisher/files/report`、`publisher/files/ed2k` 和 `publisher/range-proofs/*`。上传通过现有临时 OSS 凭据直传，PlutoFish 负责鉴权、目标账号与上传调度、核验和目录登记。
 
 片名搜索要求服务端支持 `publisher/tmdb/search`，并在 PlutoFish 后台配置 `tmdb.apiKey`。TMDB 密钥留在服务端；搜索只读资料，不访问网盘或创建作品。旧服务端会提示更新，仍可手填 ID。
 
@@ -181,6 +185,7 @@ env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui
 env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui-connection-smoke.cjs
 env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui-retention-smoke.cjs
 env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui-edit-smoke.cjs
+env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui-directory-create-smoke.cjs
 ```
 
 此验收启动真实 Electron 窗口、使用独立的临时数据与本机假服务，覆盖连接、作品搜索、固定版本与自动归类、无匹配自动新增及后续集数复用、不同画质分流、人工确认版本及过期选择拒绝、移入多层子目录、手动确认集号、历史补传、重复跳过、ED2K 同步、完成登记、暂停恢复、窄窗口和深色模式。截图放在忽略目录 `.smoke/`，临时凭据和视频在退出时清理。
@@ -190,6 +195,8 @@ env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui
 连接验收专门覆盖版本查询、网盘浏览和作品搜索断线后的自动恢复、慢查询期间的操作，以及保存目录时立即重新连接。源码回归另外覆盖 IPv4/IPv6 聚合网络错误、旧请求取消和定时校验不打断正常读取。
 
 编辑验收覆盖已有值回填、取消修改、重叠路径拒绝、作品／类型／账号／来源／目标修改、目录暂停保留、路径更换及原任务配置提示。服务测试使用模拟系统加密与回环 HTTP，验证稳定窗口变化、暂停后恢复、集号确认和启动连接竞态；发布测试另外模拟两份状态文件之间异常退出，确认停止决定不会被旧进度撤销。
+
+网盘创建验收覆盖原生上级目录弹窗、完整路径预览、取消保留原绑定、失败原地重试、重复点击防护、新季复用原作品 ID、另选上级后采用新路径、账号切换后的过期响应拦截，以及窄窗口深色模式。
 
 清理验收使用假时钟和临时视频，检查设置默认关闭、保存与校验、保留时间、暂停与关闭开关、到期删除及服务端通知；仅删除测试创建的临时文件，不读取正式运行数据。
 

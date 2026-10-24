@@ -17,6 +17,7 @@ const api: WatchAPI = {
   recognizeFile: input => invoke('recognizeFile', input),
   releases: input => invoke('releases', input),
   directories: input => invoke('directories', input),
+  createDirectories: input => invoke('createDirectories', input),
   add: input => invoke('add', input),
   updateWatch: input => invoke('updateWatch', input),
   setSourcePreset: input => invoke('setSourcePreset', input),

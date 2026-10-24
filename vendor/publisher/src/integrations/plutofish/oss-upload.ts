@@ -166,7 +166,8 @@ export async function uploadParts(options: {
       await fileRange(path, 0, 0, cp.file, signal)
       const sdk = await client()
       const headers: Record<string, string> = { 'Content-MD5': md5.toString('base64') }
-      if (token!.rate > 0) headers['x-oss-traffic-limit'] = String(token!.rate * 8)
+      // OSS 单连接限速下限为 100 KiB/s；更小的分配额度由本地发送预算准确控制。
+      if (token!.rate > 0) headers['x-oss-traffic-limit'] = String(Math.max(102400, token!.rate) * 8)
       const partOptions: OSS.RequestOptions & { headers: Record<string, string> } = { headers }
       const result = await sdk.uploadPart(dispatch.object, cp.uploadId!, number, data, 0, data.length, partOptions)
       // 本地 MD5 与远端 ETag 对齐，避免错误断点或文件被更换后拼接混合内容。

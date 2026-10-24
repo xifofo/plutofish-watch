@@ -14,7 +14,7 @@ export type Naming = {
   year: number
   season: number
   episode: number
-  /** 单集标题，放在季集编号后；电影不使用。 */
+  /** Legacy filename subtitle; current movie/series templates omit it. */
   episodeTitle?: string
   height: number
   codec: string
@@ -142,7 +142,8 @@ export function tierHeight(width: number, height: number): number {
 
 export function filename(n: Naming): string {
   const parts: string[] = []
-  const subtitle = episodeTitle(n.episodeTitle || '', n.title, n.nameDots, n.filenameTitle || '')
+  const template = n.namingOrder === 'title-year' && n.kind !== 'short'
+  const subtitle = template ? '' : episodeTitle(n.episodeTitle || '', n.title, n.nameDots, n.filenameTitle || '')
   let subtitleIndex = -1
   const addSubtitle = () => {
     if (!subtitle) return
@@ -170,9 +171,16 @@ export function filename(n: Naming): string {
   if (tier > 0) parts.push(`${tier}p`)
   if (n.source) parts.push(n.source)
   parts.push('WEB-DL')
-  if (n.codec) parts.push(n.codec)
-  if (n.dv) parts.push('DV')
-  if (n.audio) parts.push(n.audio)
+  if (template) {
+    if (n.dv) parts.push('DV')
+    if (n.audio) parts.push(n.audio)
+    const codec = templateVideoCodec(n.codec)
+    if (codec) parts.push(codec)
+  } else {
+    if (n.codec) parts.push(n.codec)
+    if (n.dv) parts.push('DV')
+    if (n.audio) parts.push(n.audio)
+  }
   const ext = n.container || 'mkv'
   const g = n.group.trim()
   const suffix = `${g ? `-${sanitizePath(g)}` : ''}.${ext}`
@@ -195,7 +203,7 @@ export function filename(n: Naming): string {
 }
 
 /** 文件名和发布版本共用已确认的动态范围、帧率及音视频规格标签。 */
-export function mediaFilenameTags(media: MediaSpecs, options: { preview?: boolean } = {}): string[] {
+export function mediaFilenameTags(media: MediaSpecs, options: { preview?: boolean; template?: boolean } = {}): string[] {
   const parts: string[] = []
   if (media.dynamicRange === 'DV') parts.push('DV')
   else if (media.dynamicRange === 'HDR' || media.dynamicRange === 'HDR10') parts.push('HDR')
@@ -206,7 +214,7 @@ export function mediaFilenameTags(media: MediaSpecs, options: { preview?: boolea
   const codec = (media.codec || '').toLowerCase()
   const videoCodec = ({ h264: 'AVC', h265: 'HEVC', hevc: 'HEVC', av1: 'AV1', vp9: 'VP9' } as Record<string, string>)[codec]
     || (codec && codec !== 'unknown' ? codec.toUpperCase() : '')
-  if (videoCodec) parts.push(videoCodec)
+  if (videoCodec && !options.template) parts.push(videoCodec)
   if (media.audio?.codec && (options.preview || (media.audio.status === 'confirmed' && media.audio.channels))) {
     const a = media.audio
     const audioCodec = ({ aac: 'AAC', ac3: 'AC3', eac3: 'DDP', dts: 'DTS', dca: 'DTS', dtsx: 'DTS.X', truehd: 'TrueHD', mlp: 'TrueHD', flac: 'FLAC' } as Record<string, string>)[a.codec!.toLowerCase()] || a.codec!.toUpperCase()
@@ -215,15 +223,30 @@ export function mediaFilenameTags(media: MediaSpecs, options: { preview?: boolea
       || (a.codec === 'dtsx' ? `${a.channels}ch` : `${a.channels}.0`) : ''
     parts.push([audioCodec, channels, a.atmos ? 'Atmos' : ''].filter(Boolean).join('.'))
   }
+  if (options.template) {
+    const codec = templateVideoCodec(media.codec || '')
+    if (codec) parts.push(codec)
+  }
   return parts
+}
+
+/** Release spelling for {video}; unknown provider profile numbers are not codecs. */
+function templateVideoCodec(raw: string): string {
+  const codec = raw.trim().toLowerCase().replace(/^h\.(264|265)/, 'h$1').split('.')[0]!
+  if (['h265', 'hevc', 'hvc1', 'hev1', 'dvhe', 'dvh1', 'x265'].includes(codec)) return 'H.265'
+  if (['h264', 'avc', 'avc1', 'avc3', 'x264'].includes(codec)) return 'H.264'
+  if (['av1', 'av01'].includes(codec)) return 'AV1'
+  if (['vp9', 'vp09'].includes(codec)) return 'VP9'
+  return ''
 }
 
 /** New measured outputs use finished specs; the legacy filename remains the failure fallback. */
 export function completedFilename(n: Naming, media: MediaSpecs, marker?: 'HQ' | 'MAXPLUS' | 'EDR',
   options: { preview?: boolean } = {}): string {
   const parts = [dots(n.filenameTitle || n.title || n.nameDots)]
+  const template = n.namingOrder === 'title-year' && n.kind !== 'short'
   if (n.namingOrder === 'title-year' && n.year > 0) parts.push(String(n.year))
-  const subtitle = episodeTitle(n.episodeTitle || '', n.title, n.nameDots, n.filenameTitle || '')
+  const subtitle = template ? '' : episodeTitle(n.episodeTitle || '', n.title, n.nameDots, n.filenameTitle || '')
   let subtitleIndex = -1
   if (n.kind === 'show') {
     const season = Number.isSafeInteger(n.season) && n.season >= 0 ? n.season : 1
@@ -237,7 +260,7 @@ export function completedFilename(n: Naming, media: MediaSpecs, marker?: 'HQ' | 
   if (n.source) parts.push(n.source === 'YK' ? 'YOUKU' : n.source)
   parts.push('WEB-DL')
   if (marker) parts.push(marker)
-  parts.push(...mediaFilenameTags(media, options))
+  parts.push(...mediaFilenameTags(media, { ...options, template }))
   const suffix = `${n.group.trim() ? `-${sanitizePath(n.group.trim())}` : ''}.${n.container || 'mkv'}`
   // Reserve space for sidecars and retain the season/episode and technical suffix.
   for (const index of [subtitleIndex, 0]) {

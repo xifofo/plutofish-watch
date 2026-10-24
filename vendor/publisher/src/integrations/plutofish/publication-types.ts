@@ -4,6 +4,9 @@ import type { CompletedMedia } from '../../lib/actual-version.ts'
 import type { UploadTransfer } from './upload-traffic.ts'
 import { uploadBytes, uploadRemaining } from './upload-display'
 
+/** 手动建目录的本地选择记录；不参与上传调度，也不触发自动创建或改名。 */
+export type DirectoryCreation = { parentId: string; parentPath: string; targetId: string; workKey: string; workDirectoryId?: string; workDirectoryPath?: string }
+
 export type PublicationInput = {
   category: string
   /** 本次上传账号；省略时使用作品偏好或发布端默认账号。 */
@@ -11,6 +14,7 @@ export type PublicationInput = {
   releaseSelection?: ReleaseSelection
   directoryId?: string
   directoryPath?: string
+  directoryCreation?: DirectoryCreation
   /** 用户明确修正的集号，按平台视频 ID 关联，允许特别篇 0。 */
   episodeNumbers?: Record<string, number>
 }

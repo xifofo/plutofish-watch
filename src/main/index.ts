@@ -69,6 +69,7 @@ else {
             case 'recognitionSample': value = await svc.recognitionSample(payload); break
             case 'recognizeFile': value = await svc.recognizeFile(payload); break
             case 'directories': value = await svc.connection.directories(payload.sourceAccountId, payload.directoryId, payload.cursor); break
+            case 'createDirectories': value = await svc.connection.createDirectories(payload.sourceAccountId, payload.directoryId, payload.segments); break
             case 'add': await svc.add(payload); break
             case 'updateWatch': await svc.updateWatch(payload); break
             case 'setSourcePreset': await svc.setSourcePreset(payload); break

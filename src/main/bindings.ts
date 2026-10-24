@@ -3,6 +3,7 @@ import { normalizePlatform, releaseTypes, type ReleaseSource } from '../../vendo
 import { createHash } from 'node:crypto'
 import type { Binding, Connection, WatchInput, WatchRoot, Work } from '../shared/model'
 import { normalizePlutoFishURL } from '../../vendor/publisher/src/integrations/plutofish/client'
+import { validateDirectoryCreation } from '../shared/directory-creation'
 
 export const stableKey = (prefix: string, data: unknown) =>
   `${prefix}:${createHash('sha256').update(JSON.stringify(data)).digest('hex')}`
@@ -45,6 +46,7 @@ export function validateInput(input: WatchInput, view: Connection): WatchInput {
     path: input.path, title: input.title.trim(), work: validateWork(input.work, input.seasonNumber),
     sourceAccountId: input.sourceAccountId, versionMode, sourcePreset: validateSource(input.sourcePreset), releaseId: versionMode === 'auto' ? '' : input.releaseId, directoryId: input.directoryId,
     directoryPath: input.directoryPath, includeExisting: input.includeExisting, stableSeconds: input.stableSeconds,
+    directoryCreation: validateDirectoryCreation(input),
     ...(input.work.mediaType === 'tv' ? { seasonNumber: input.seasonNumber } : {}),
   }
 }

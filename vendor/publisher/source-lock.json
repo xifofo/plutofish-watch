@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "https://github.com/xifofo/gvs-tui",
-  "baseRevision": "b0cfd57a625f7b1ba14f485692a628e68914bb92",
+  "baseRevision": "0068c7364ffd54d07b1a40398801755c0903bb0e",
   "includesUncommittedChanges": false,
   "modifiedFiles": [],
   "entries": [
@@ -17,13 +17,13 @@
     "src/integrations/plutofish/connection.ts": "021bf03ef92ed952d851862755982f5f0980b7ac22f8199f747a5b1e0deea5e0",
     "src/integrations/plutofish/ed2k-computer.ts": "eb1e4c51b5a61ddf024559da0fc18e216eb91cefa84ba8cc935c202559a5d1e3",
     "src/integrations/plutofish/measured-release.ts": "0de038856def3a59e16bc04a3b3871e8615c1c35c4069f95f4c92e30c44d2def",
-    "src/integrations/plutofish/oss-upload.ts": "55ab76c32c3c74bec83688bc2dfe813cff364d45aef729afd3d065dfbbd5a1a7",
+    "src/integrations/plutofish/oss-upload.ts": "2451da2559e70f6322c9223abe44b0c426259049843031c97a943f5bf59c14e8",
     "src/integrations/plutofish/publication-cleanup.ts": "969db991e22d2dcc31273c5d633369c55aa2128e0afc77fd03582e215148eaa7",
     "src/integrations/plutofish/publication-proofs.ts": "389c091e217fb6418787929813c43c5f81b7f84d825d8f82739e928882f2eeb8",
     "src/integrations/plutofish/publication-retention.ts": "d449eb4b38f7e54bff73880529cc566ac188e93d78f2e796104ae603774e1a58",
     "src/integrations/plutofish/publication-state.ts": "b9b923347911724220a482b0dea128f55cc00828db9d488633383c6ee657c62d",
     "src/integrations/plutofish/publication-store.ts": "770188c988ad33f5d2a047b717940256284a12b4760755ad53661a6c3469b90a",
-    "src/integrations/plutofish/publication-types.ts": "1a722509ec0542eb186cfda697f03b8894d4b1dd2375d537fada8483e4c9707c",
+    "src/integrations/plutofish/publication-types.ts": "df1e5a9269e709380a40c8ab88e3d87ff94233bf271bb702e7015a6dba66b9bc",
     "src/integrations/plutofish/publication-version.ts": "375b3ea02427409e148e581e13a81e09e804d6da0f81a3410c95b76fe0df9424",
     "src/integrations/plutofish/publication-worker.ts": "44e91b277780ad66562d54722bb6d1474050101c6c2c235043f3b4629d44dc40",
     "src/integrations/plutofish/recognition-types.ts": "ed2497354846391a04f95294f44618948c3d292edf8ccfc13d4afd0fed62a667",
@@ -37,14 +37,14 @@
     "src/integrations/plutofish/upload-display.ts": "f129033f373233b4f13c86b73a6803a270b6ca377dfb46b877a444049dbce9fd",
     "src/integrations/plutofish/upload-file.ts": "81346cbf0281984a4327609681cb2fbd39ee6d5228a5a28f3c1b0190f7075d02",
     "src/integrations/plutofish/upload-pause.ts": "a78823905a6aab92cdd3ae6bbd9c7b39d05666ef0c9d73fe599c195fba6fa388",
-    "src/integrations/plutofish/upload-traffic.ts": "009add15c037d97adf4f56cc0966ed3ced1ec08f0232f8655299391f5a45a4da",
+    "src/integrations/plutofish/upload-traffic.ts": "e17fd6450dd0eb16a1588a0238b3b86b91fdf0c6acd984b63323041602277484",
     "src/integrations/plutofish/upload-types.ts": "79dc5761bd7650eff2e5b125787e2508f9df529407c97bf02c4eab63849fa7d2",
     "src/lib/actual-version.ts": "21463f78c539d9086b05d7f54e8adf6f42ec22fc855297a071c6217ec3c913da",
-    "src/lib/config.ts": "354b4ba01ef4531b36207880186eacd278d2b94e434d70950e6b8300a75d9c4b",
+    "src/lib/config.ts": "453f1ce40bf180bb5512278cc18672555452716d45ea9e90878685edbd56cb3e",
     "src/lib/ed2k.ts": "f7acd10ba8739efd7e0c71e91ed0fb5d8a419b0d88fe9f902a191a1c19aaad3f",
     "src/lib/job-event.ts": "cbc5be24f35628b9112fce63ff41b7996a2e3c5641f9ce5d5a31443768301716",
     "src/lib/local-file-use.ts": "7c28f2c09baa4da0fe898ad5c9290bb24da79f0c63ecf263252ca9b77a4f8332",
-    "src/lib/name.ts": "cdea551d433cc1e038a699b280f9f3154f1da401e21cc01948a790e83a853277",
+    "src/lib/name.ts": "d25cbc04971efed578d01fecd1283edf20d900aedbb990f979426350434d033f",
     "src/lib/util.ts": "ef7b07478a0dbee9e58979802b52db165b2d5960101b2fcb758f35a268b0d9a2"
   }
 }

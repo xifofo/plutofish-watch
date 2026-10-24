@@ -13,7 +13,7 @@ export type FileConfig = {
   desktopProxy?: string
   outDir: string
   releaseGroup: string
-  /** Include the platform's episode title in new task filenames; omitted legacy configs default on. */
+  /** Legacy task/short-video naming preference; current movie/series templates omit episode titles. */
   includeEpisodeTitle?: boolean
   tmdbKey: string
   tmdbLang: string
@@ -197,7 +197,7 @@ export function defaultConfig(): FileConfig {
     gatewayProxy: '',
     desktopProxy: '',
     outDir: '',
-    releaseGroup: 'ADWeb',
+    releaseGroup: 'PFWEB',
     includeEpisodeTitle: true,
     tmdbKey: '',
     tmdbLang: 'zh-CN',
@@ -238,7 +238,7 @@ export function loadConfig(): FileConfig {
   }
   cfg.host = (cfg.host || 'http://127.0.0.1:8080').replace(/\/+$/, '')
   const outChanged = ensureOutDir(cfg)
-  if (!cfg.releaseGroup) cfg.releaseGroup = 'ADWeb'
+  if (!cfg.releaseGroup) cfg.releaseGroup = 'PFWEB'
   cfg.includeEpisodeTitle = cfg.includeEpisodeTitle !== false
   if (!cfg.hongguoFmt) cfg.hongguoFmt = 'mkv'
   if (!cfg.huangguoFmt) cfg.huangguoFmt = 'mkv'

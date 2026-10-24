@@ -32,6 +32,7 @@ export function applyWatchEdit(store: WatchStore, root: WatchRoot, next: WatchRo
   Object.assign(root, next)
   // Object.assign 不会移除已省略的可选字段；电影必须真正清掉原季号。
   if (next.work.mediaType === 'movie') delete root.seasonNumber
+  if (!next.directoryCreation) delete root.directoryCreation
   if (moved) {
     root.initialized = false
     delete root.lastScan; delete root.error
