@@ -1,15 +1,15 @@
 /** 桌面应用服务：绑定校验、本地状态与发布器生命周期统一由主进程管理。 */
 import { randomUUID } from 'node:crypto'
-import { basename, extname, join } from 'node:path'
+import { basename, extname, join, relative } from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import { safeStorage } from 'electron'
 import { releaseSource, sourceReviewReason } from '../../vendor/publisher/src/integrations/plutofish/release-specs'
 import { releaseChoices } from '../../vendor/publisher/src/integrations/plutofish/release-selection'
 import type { PublicationDraft } from '../../vendor/publisher/src/integrations/plutofish/publication-types'
-import type { Snapshot, WatchInput, WatchAPI } from '../shared/model'
+import type { Release, Snapshot, WatchInput, WatchAPI } from '../shared/model'
 import { validateRetention } from '../shared/retention'
 import { bindingFor, stableKey, validateInput, validateWork, validateSource } from './bindings'
-import { canonicalRoot, safeFile, sameSignature, within } from './files'
+import { canonicalRoot, episodeFromName, safeFile, sameSignature, within } from './files'
 import { atomicJSON, WatchStore } from './store'
 import { DirectoryWatcher } from './watcher'
 import { WatchPublisher } from './publisher'
@@ -18,7 +18,11 @@ import { WatchConnection, validateWatchedFile } from './connection'
 import { searchWorks } from './work-search'
 import { recognitionSample, recognizeFile } from './recognition'
 import { applyWatchEdit } from './watch-edit'
+import { watchVersionChoices } from './versions'
 import type { RetentionOptions } from '../../vendor/publisher/src/integrations/plutofish/publication-retention'
+
+/** 首次扫描忽略的历史文件按 PlutoFish 进度核对的间隔 */
+export const HISTORY_SYNC_MS = 6 * 3600_000
 
 export class WatchService {
   readonly store: WatchStore
@@ -28,6 +32,7 @@ export class WatchService {
   private fatalError = ''
   private ffprobeAvailable = false
   private stopped = false
+  private historyTimer?: ReturnType<typeof setInterval>
 
   constructor(private directory: string, private changed: () => void, compute?: RetentionOptions['compute']) {
     this.store = new WatchStore(join(directory, 'watch-state.json'))
@@ -63,6 +68,7 @@ export class WatchService {
     if (this.stopped) return
     this.publisher.start()
     this.watcher.start()
+    this.historyTimer = setInterval(() => { void this.syncHistory().catch(() => {}) }, 60_000)
     // 窗口先于视频检测就绪；用户已发起连接时，不再用启动校验取消新连接或查询。
     const connection = this.connection.view()
     if (connection.hasKey && connection.status === 'idle') {
@@ -147,6 +153,35 @@ export class WatchService {
   async backfill(id: string): Promise<number> {
     if (this.fatalError) throw new Error(this.fatalError)
     return this.watcher.backfill(id)
+  }
+
+  /**
+   * 追更进度以 PlutoFish 为准：固定版本的剧集目录里首次扫描忽略的历史文件，对应集号在版本里还没有就绪的
+   * （从版本第一集起）自动补入队列；换电脑重新添加目录或首次不补传时，也不会漏下中间缺的集。
+   * 版本里已有的集保持忽略。每个目录每 6 小时核对一次，改了版本、季或账号后重新核对；查询失败下次再试。
+   */
+  async syncHistory(now = Date.now()): Promise<number> {
+    if (this.fatalError || this.stopped || !this.connection.ready) return 0
+    let restored = 0, checked = false
+    for (const root of this.store.data.watches) {
+      if (!root.enabled || !root.initialized || root.work.mediaType !== 'tv' || (root.versionMode ?? 'fixed') !== 'fixed' || !root.releaseId) continue
+      if (now - (root.progressAt ?? 0) < HISTORY_SYNC_MS) continue
+      checked = true
+      if (!Object.values(this.store.data.observations[root.id] ?? {}).some(o => o.ignored)) { root.progressAt = now; continue }
+      try {
+        const choices = await watchVersionChoices(this.connection, root, AbortSignal.timeout(30_000))
+        const release = choices.items.find(r => r.id === root.releaseId) as Release | undefined
+        root.progressAt = now
+        if (!release || !Array.isArray(release.episodes) || !release.episodes.length) continue
+        const have = new Set(release.episodes), from = Math.min(...release.episodes)
+        restored += await this.watcher.backfill(root.id, path => {
+          const episode = episodeFromName(relative(root.path, path), root.seasonNumber!)
+          return episode !== undefined && episode >= from && !have.has(episode)
+        })
+      } catch { /* 网络或服务端暂不可用、目录暂不可访问时下次再核对。 */ }
+    }
+    if (checked && !this.stopped && !this.fatalError) { this.store.save(); if (restored) this.changed() }
+    return restored
   }
 
   async updateWatch(raw: Parameters<WatchAPI['updateWatch']>[0]): Promise<void> {
@@ -307,6 +342,7 @@ export class WatchService {
 
   async close(): Promise<void> {
     this.stopped = true
+    if (this.historyTimer) clearInterval(this.historyTimer)
     await this.watcher.close()
     await this.publisher.close()
     this.connection.close()

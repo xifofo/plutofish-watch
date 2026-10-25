@@ -22,7 +22,8 @@ import type { Recognition } from '../../vendor/publisher/src/integrations/plutof
 export type RecognitionSample = { directoryName: string; fileName: string | null; truncated: boolean }
 export type WorkSearch = { sourceAccountId: string; mediaType: Work['mediaType']; query: string; page: number }
 export type WorkPage = { items: WorkOption[]; page: number; totalPages: number; total: number }
-export type Release = { id: string; name: string; resolution: string; dynamicRange: string; status: string; latestEpisode?: number }
+/** episodes：已就绪正片的集号（新版服务端返回），历史文件据此只补版本里缺的集。 */
+export type Release = { id: string; name: string; resolution: string; dynamicRange: string; status: string; latestEpisode?: number; episodes?: number[] }
 export type WatchInput = {
   path: string; title: string; sourceAccountId: string; work: Work; seasonNumber?: number
   releaseId: string; directoryId: string; directoryPath: string
@@ -40,6 +41,8 @@ export type DirectoryCreation = {
 export type WatchRoot = WatchInput & {
   id: string; binding: Binding; releaseName: string; releaseVersion?: { name: string; resolution: string; dynamicRange: string }; enabled: boolean
   initialized: boolean; createdAt: string; lastScan?: string; error?: string
+  /** 上次按 PlutoFish 版本进度核对首次扫描忽略的历史文件的时间 */
+  progressAt?: number
 }
 export type Signature = { size: number; mtimeMs: number; ctimeMs: number; ino: number; dev: number }
 export type Observation = {

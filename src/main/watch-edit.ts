@@ -30,6 +30,8 @@ export function applyWatchEdit(store: WatchStore, root: WatchRoot, next: WatchRo
     job.updatedAt = new Date(now).toISOString()
   }
   Object.assign(root, next)
+  // 换了版本、季或账号后按新目标重新核对历史文件的追更进度。
+  if (targetChanged) delete root.progressAt
   // Object.assign 不会移除已省略的可选字段；电影必须真正清掉原季号。
   if (next.work.mediaType === 'movie') delete root.seasonNumber
   if (!next.directoryCreation) delete root.directoryCreation

@@ -52,8 +52,8 @@ export class DirectoryWatcher {
     for (const root of this.store.data.watches) if (root.enabled) await this.scanOne(root)
   }
 
-  /** 将首次扫描明确忽略的历史文件补入队列；保留已完成、失败及手动取消的任务决定。 */
-  async backfill(id: string): Promise<number> {
+  /** 将首次扫描明确忽略的历史文件补入队列；保留已完成、失败及手动取消的任务决定。only 只补其中符合条件的文件。 */
+  async backfill(id: string, only?: (path: string) => boolean): Promise<number> {
     const root = this.store.data.watches.find(w => w.id === id)
     if (!root?.enabled || this.abort.signal.aborted) throw new Error('请先恢复目录监控')
     await this.scanOne(root)
@@ -62,7 +62,7 @@ export class DirectoryWatcher {
     const now = this.now(), date = new Date(now).toISOString()
     let count = 0
     for (const [path, observation] of Object.entries(this.store.data.observations[id] ?? {})) {
-      if (!observation.ignored) continue
+      if (!observation.ignored || (only && !only(path))) continue
       const job: WatchJob = {
         id: randomUUID(), watchId: id, path, relativePath: relative(root.path, path), signature: observation.signature,
         status: 'waiting', percent: 0, error: '', createdAt: date, updatedAt: date,
