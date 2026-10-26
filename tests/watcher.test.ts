@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { WatchStore } from '../src/main/store'
 import { DirectoryWatcher } from '../src/main/watcher'
 import { episodeFromName } from '../src/main/files'
+import { applyWatchEdit } from '../src/main/watch-edit'
 import type { WatchRoot } from '../src/shared/model'
 
 const cleanups: Array<() => Promise<void>> = []
@@ -181,4 +182,64 @@ test('暂停或失联的目录不能补传旧观察记录', async () => {
   await rename(f.rootPath, f.rootPath + '-offline')
   await expect(f.watcher.backfill(f.root.id)).rejects.toThrow('不可访问')
   expect(f.store.data.jobs).toHaveLength(0)
+})
+
+test('同一任务可扫描三个本地目录，集号相对各自根目录解析，失联不影响其他目录', async () => {
+  const f = await fixture()
+  const second = join(f.temp, 'Season 9', 'second'), third = join(f.temp, 'third')
+  await mkdir(second, { recursive: true }); await mkdir(third)
+  f.root.additionalPaths = [second, third]
+  for (const dir of [f.rootPath, second, third]) await writeFile(join(dir, 'E01.mp4'), 'video')
+  await f.watcher.scan(); f.advance(10001); await f.watcher.scan()
+  expect(f.store.data.jobs).toHaveLength(3)
+  expect(f.store.data.jobs.every(j => j.status === 'queued' && j.episodeNumber === 1 && j.relativePath === 'E01.mp4')).toBe(true)
+  const old = f.store.data.jobs.find(j => j.path.startsWith(second))!
+  await rename(second, second + '-offline')
+  await writeFile(join(third, 'E02.mp4'), 'new')
+  await f.watcher.scan(); f.advance(10001); await f.watcher.scan()
+  expect(f.root.error).toContain(second); expect(old.status).toBe('queued')
+  expect(f.cancelled).toHaveLength(0)
+  expect(f.store.data.jobs.find(j => j.episodeNumber === 2)?.status).toBe('queued')
+  await rename(second + '-offline', second)
+  await rm(join(third, 'E01.mp4')); await f.watcher.scan()
+  expect(f.root.error).toBe(''); expect(old.status).toBe('queued')
+  expect(f.cancelled).toHaveLength(1)
+})
+
+test('各目录首次基线独立持久化，部分失联后重启不会忽略可访问目录中的新文件', async () => {
+  const f = await fixture(false), second = join(f.temp, 'offline')
+  f.root.additionalPaths = [second]
+  await writeFile(join(f.rootPath, 'E01.mp4'), 'old')
+  await f.watcher.scan()
+  expect(f.root.initialized).toBe(false)
+  expect(f.root.initializedPaths).toEqual([f.rootPath])
+  await f.watcher.close()
+  await writeFile(join(f.rootPath, 'E02.mp4'), 'new-after-baseline')
+  await mkdir(second); await writeFile(join(second, 'E03.mp4'), 'old-on-first-scan')
+  const restored = new WatchStore(f.store.path)
+  const watcher = new DirectoryWatcher(restored, () => {}, async () => {}, e => { throw e })
+  cleanups.push(() => watcher.close())
+  await watcher.scan()
+  expect(restored.data.jobs.map(j => j.relativePath)).toEqual(['E02.mp4'])
+  expect(restored.data.watches[0].initialized).toBe(true)
+  expect(await watcher.backfill(f.root.id)).toBe(2)
+  expect(await watcher.backfill(f.root.id)).toBe(0)
+})
+
+test('新增目录只初始化新路径，保留原目录队列和基线；暂停恢复后扫描所有目录', async () => {
+  const f = await fixture(false), second = join(f.temp, 'second')
+  await writeFile(join(f.rootPath, 'E01.mp4'), 'history')
+  await f.watcher.scan()
+  await writeFile(join(f.rootPath, 'E02.mp4'), 'new'); await f.watcher.scan()
+  const pending = f.store.data.jobs[0]
+  await mkdir(second); await writeFile(join(second, 'E03.mp4'), 'new-root-history')
+  applyWatchEdit(f.store, f.root, { ...f.root, additionalPaths: [second], includeExisting: false })
+  await f.watcher.scan()
+  expect(f.store.data.jobs).toHaveLength(1); expect(pending.status).toBe('waiting')
+  f.root.enabled = false
+  await writeFile(join(second, 'E04.mp4'), 'paused'); await f.watcher.scan()
+  expect(f.store.data.jobs).toHaveLength(1)
+  f.root.enabled = true; await f.watcher.scan(); f.advance(10001); await f.watcher.scan()
+  expect(f.store.data.jobs.map(j => j.episodeNumber)).toEqual([2, 4])
+  expect(await f.watcher.backfill(f.root.id)).toBe(2)
 })

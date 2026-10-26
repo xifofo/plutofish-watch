@@ -4,6 +4,7 @@ import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { DiskState, WatchJob, WatchRoot } from '../shared/model'
 import { defaultRetention, validateRetention } from '../shared/retention'
+import { validateWatchPaths } from '../shared/watch-paths'
 
 export function atomicJSON(path: string, data: unknown): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
@@ -33,6 +34,13 @@ export class WatchStore {
       throw new Error('监控记录损坏，请保留数据文件后修复')
     }
     value.retention = value.retention === undefined ? defaultRetention() : validateRetention(value.retention)
+    for (const root of [...value.watches, ...value.jobs.flatMap(job => job.watchSnapshot ? [job.watchSnapshot] : [])]) {
+      const paths = validateWatchPaths(root)
+      if (root.initializedPaths !== undefined && (!Array.isArray(root.initializedPaths)
+        || root.initializedPaths.some(path => typeof path !== 'string' || !paths.includes(path)))) {
+        throw new Error('监控目录扫描记录损坏，请保留数据文件后修复')
+      }
+    }
     this.data = value
     // 中断的本地探测重新开始；已有上传清单另由发布器恢复。
     for (const job of value.jobs) {

@@ -75,3 +75,21 @@ test('更换路径只停止未登记任务并重新建立扫描基线，历史�
   expect(store.data.observations.root).toBeUndefined()
   expect(store.data.jobs).toHaveLength(2)
 })
+
+test('移除一个目录仅停止该目录未登记任务，保留其他队列与基线及原发布任务归属', () => {
+  const { store, root, job } = setup()
+  root.additionalPaths = ['/second', '/third']
+  const kept = job('kept'), removed = job('removed', { path: '/second/E02.mp4' })
+  const registered = job('registered', { path: '/second/E03.mp4', fileKey: 'stable-key', status: 'paused' })
+  applyWatchEdit(store, root, { ...root, additionalPaths: ['/third'] })
+  expect(kept.status).toBe('queued'); expect(removed.status).toBe('cancelled')
+  expect(registered.status).toBe('paused')
+  expect(registered.watchSnapshot?.additionalPaths).toEqual(['/second', '/third'])
+  expect(root.initializedPaths).toEqual(['/old', '/third']); expect(root.initialized).toBe(true)
+  expect(Object.keys(store.data.observations.root)).toEqual([kept.path])
+  const restored = new WatchStore(store.path)
+  expect(restored.data.watches[0].additionalPaths).toEqual(['/third'])
+  expect(restored.rootFor(restored.data.jobs[2])?.additionalPaths).toContain('/second')
+  applyWatchEdit(store, root, { ...root, path: '/third', additionalPaths: ['/old'] })
+  expect(kept.status).toBe('queued'); expect(root.initialized).toBe(true)
+})

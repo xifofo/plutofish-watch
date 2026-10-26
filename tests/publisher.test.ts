@@ -200,6 +200,38 @@ test('按天清理只删除已完成且 ED2K 已同步的原视频，保留历�
   expect(f.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'start')).toHaveLength(1)
 })
 
+test.each(['retained', 'removed', 'symlink'] as const)('第二个本地目录可发布，清理仍检查当前目录归属和符号链接：%s', async kind => {
+  let now = Date.now()
+  const f = await setup({ retry: { now: () => now } })
+  const original = f.root.path, primary = join(f.temp, 'primary')
+  await mkdir(primary)
+  f.root.path = primary; f.root.additionalPaths = [original]
+  f.store.data.retention = { enabled: true, days: 1 }
+  await until(f.publisher, () => f.job.status === 'completed' && f.job.synced === true && f.job.ed2kSaved === true)
+  if (kind === 'removed') applyWatchEdit(f.store, f.root, { ...f.root, additionalPaths: [] })
+  if (kind === 'symlink') { await rename(original, original + '-moved'); await symlink(original + '-moved', original) }
+  now += 2 * 86400000; await f.publisher.tick()
+  expect(existsSync(f.file)).toBe(kind !== 'retained')
+  expect(f.job.retention?.state).toBe(kind === 'retained' ? 'deleted' : 'busy')
+})
+
+test('同一监控任务不同本地目录中的相同内容只发布一次', async () => {
+  const f = await setup(), second = join(f.temp, 'second')
+  await mkdir(second)
+  const original = f.root.path
+  f.root.path = second; f.root.additionalPaths = [original]
+  await until(f.publisher, () => f.job.status === 'completed' && f.job.synced === true)
+  const path = join(second, 'Copy.S01E01.mp4')
+  await copyFile(f.file, path)
+  const duplicate: WatchJob = { id: 'duplicate-second-directory', watchId: f.root.id, path, relativePath: 'Copy.S01E01.mp4',
+    signature: await safeFile(second, path), episodeNumber: 1, status: 'queued', error: '', percent: 0,
+    createdAt: f.job.createdAt, updatedAt: f.job.updatedAt }
+  f.store.data.jobs.push(duplicate)
+  await until(f.publisher, () => duplicate.status === 'duplicate')
+  expect(duplicate.duplicateOf).toBe(f.job.id)
+  expect(f.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'start')).toHaveLength(1)
+})
+
 test('关闭清理或延长天数立即阻止删除，重新开启后按原完成时间判断', async () => {
   let now = Date.now()
   const f = await setup({ retry: { now: () => now } })

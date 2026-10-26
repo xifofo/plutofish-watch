@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import type { Binding, Connection, WatchInput, WatchRoot, Work } from '../shared/model'
 import { normalizePlutoFishURL } from '../../vendor/publisher/src/integrations/plutofish/client'
 import { validateDirectoryCreation } from '../shared/directory-creation'
+import { validateWatchPaths } from '../shared/watch-paths'
 
 export const stableKey = (prefix: string, data: unknown) =>
   `${prefix}:${createHash('sha256').update(JSON.stringify(data)).digest('hex')}`
@@ -28,6 +29,7 @@ export function bindingFor(view: Connection, sourceId: string): Binding {
 }
 
 export function validateInput(input: WatchInput, view: Connection): WatchInput {
+  const paths = validateWatchPaths(input)
   validateWork(input?.work, input?.seasonNumber)
   bindingFor(view, input.sourceAccountId)
   if (!view.identity?.categories?.some(c => c.value === input.work.category)) throw new Error('所选资源分类已不可用')
@@ -43,7 +45,7 @@ export function validateInput(input: WatchInput, view: Connection): WatchInput {
     throw new Error('请完整填写目录绑定；稳定等待时间为 10–3600 秒')
   }
   return {
-    path: input.path, title: input.title.trim(), work: validateWork(input.work, input.seasonNumber),
+    path: paths[0], additionalPaths: paths.slice(1), title: input.title.trim(), work: validateWork(input.work, input.seasonNumber),
     sourceAccountId: input.sourceAccountId, versionMode, sourcePreset: validateSource(input.sourcePreset), releaseId: versionMode === 'auto' ? '' : input.releaseId, directoryId: input.directoryId,
     directoryPath: input.directoryPath, includeExisting: input.includeExisting, stableSeconds: input.stableSeconds,
     directoryCreation: validateDirectoryCreation(input),

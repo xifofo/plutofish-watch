@@ -8,8 +8,9 @@ import { releaseChoices } from '../../vendor/publisher/src/integrations/plutofis
 import type { PublicationDraft } from '../../vendor/publisher/src/integrations/plutofish/publication-types'
 import type { Release, Snapshot, WatchInput, WatchAPI } from '../shared/model'
 import { validateRetention } from '../shared/retention'
+import { watchPaths } from '../shared/watch-paths'
 import { bindingFor, stableKey, validateInput, validateWork, validateSource } from './bindings'
-import { canonicalRoot, episodeFromName, safeFile, sameSignature, within } from './files'
+import { canonicalRoot, episodeFromName, safeWatchFile, sameSignature, within, requiredWatchPath } from './files'
 import { atomicJSON, WatchStore } from './store'
 import { DirectoryWatcher } from './watcher'
 import { WatchPublisher } from './publisher'
@@ -132,15 +133,13 @@ export class WatchService {
     if (this.fatalError) throw new Error(this.fatalError)
     if (this.store.data.watches.length >= 100) throw new Error('最多支持 100 个监控目录')
     const input = validateInput(raw, this.connection.view())
-    const path = await canonicalRoot(input.path)
-    if (within(path, this.directory) || within(this.directory, path)) throw new Error('不能监控应用自身的数据目录或其父目录')
-    if (this.store.data.watches.some(w => within(w.path, path) || within(path, w.path))) throw new Error('监控目录不能重复或互相嵌套')
+    const paths = await this.localPaths(input)
     const releases = await this.releases(input)
     const release = releases.find(r => r.id === input.releaseId)
     if (input.versionMode !== 'auto' && !release) throw new Error('版本已变化，请重新查询并选择')
     const binding = bindingFor(this.connection.view(), input.sourceAccountId)
     this.store.data.watches.push({
-      ...input, path, binding, id: randomUUID(), releaseName: input.versionMode === 'auto' ? '自动归类' : release!.name,
+      ...input, path: paths[0], additionalPaths: paths.slice(1), binding, id: randomUUID(), releaseName: input.versionMode === 'auto' ? '自动归类' : release!.name,
       releaseVersion: release ? { name: release.name, resolution: release.resolution, dynamicRange: release.dynamicRange } : undefined,
       enabled: true, initialized: false, createdAt: new Date().toISOString(),
     })
@@ -148,6 +147,18 @@ export class WatchService {
     this.watcher.refresh()
     await this.watcher.scan()
     this.changed()
+  }
+
+  private async localPaths(input: WatchInput, excludingId?: string): Promise<string[]> {
+    const paths: string[] = []
+    const existing = this.store.data.watches.filter(w => w.id !== excludingId).flatMap(watchPaths)
+    for (const raw of watchPaths(input)) {
+      const path = await canonicalRoot(raw)
+      if (within(path, this.directory) || within(this.directory, path)) throw new Error('不能监控应用自身的数据目录或其父目录')
+      if ([...existing, ...paths].some(other => within(other, path) || within(path, other))) throw new Error('监控目录不能重复或互相嵌套')
+      paths.push(path)
+    }
+    return paths
   }
 
   async backfill(id: string): Promise<number> {
@@ -175,7 +186,7 @@ export class WatchService {
         if (!release || !Array.isArray(release.episodes) || !release.episodes.length) continue
         const have = new Set(release.episodes), from = Math.min(...release.episodes)
         restored += await this.watcher.backfill(root.id, path => {
-          const episode = episodeFromName(relative(root.path, path), root.seasonNumber!)
+          const episode = episodeFromName(relative(requiredWatchPath(root, path), path), root.seasonNumber!)
           return episode !== undefined && episode >= from && !have.has(episode)
         })
       } catch { /* 网络或服务端暂不可用、目录暂不可访问时下次再核对。 */ }
@@ -189,16 +200,14 @@ export class WatchService {
     const root = this.store.data.watches.find(w => w.id === raw?.id)
     if (!root) throw new Error('监控目录不存在')
     const input = validateInput(raw.watch, this.connection.view())
-    const path = await canonicalRoot(input.path)
-    if (within(path, this.directory) || within(this.directory, path)) throw new Error('不能监控应用自身的数据目录或其父目录')
-    if (this.store.data.watches.some(w => w.id !== root.id && (within(w.path, path) || within(path, w.path)))) throw new Error('监控目录不能重复或互相嵌套')
+    const paths = await this.localPaths(input, root.id)
     const releases = await this.releases(input)
     const release = releases.find(r => r.id === input.releaseId)
     if (input.versionMode !== 'auto' && !release) throw new Error('版本已变化，请重新查询并选择')
     const binding = bindingFor(this.connection.view(), input.sourceAccountId)
     const enabled = root.enabled
-    const next = { ...root, ...input, path, binding, enabled,
-      includeExisting: path === root.path ? root.includeExisting : input.includeExisting,
+    const next = { ...root, ...input, path: paths[0], additionalPaths: paths.slice(1), binding, enabled,
+      includeExisting: paths.every(path => watchPaths(root).includes(path)) ? root.includeExisting : input.includeExisting,
       releaseName: input.versionMode === 'auto' ? '自动归类' : release!.name,
       releaseVersion: release ? { name: release.name, resolution: release.resolution, dynamicRange: release.dynamicRange } : undefined }
     // 先完成验证，再停止旧扫描和读文件操作；保存期间不允许新任务取得一半更新的配置。
@@ -287,7 +296,7 @@ export class WatchService {
       await this.publisher.stopJob(job, 'cancel')
     } else if (input.action === 'confirmSource') {
       if (!root || root.versionMode !== 'auto' || job.changed || job.fileKey || job.status !== 'review' || !job.versionReview?.sourceRequired) throw new Error('此任务无需确认来源')
-      if (!sameSignature(await safeFile(root.path, job.path), job.signature)) throw new Error('文件已变化，请重新扫描')
+      if (!sameSignature(await safeWatchFile(root, job.path), job.signature)) throw new Error('文件已变化，请重新扫描')
       const source = validateSource(input.source)
       const reason = sourceReviewReason(releaseSource(basename(job.path, extname(job.path)), source))
       if (reason) throw new Error(reason)
@@ -298,20 +307,20 @@ export class WatchService {
       if (!root || root.versionMode !== 'auto' || job.changed || job.fileKey || job.status !== 'review' || !job.versionReview) {
         throw new Error('此任务不能重新选择版本')
       }
-      if (!sameSignature(await safeFile(root.path, job.path), job.signature)) throw new Error('文件已变化，请重新扫描')
+      if (!sameSignature(await safeWatchFile(root, job.path), job.signature)) throw new Error('文件已变化，请重新扫描')
       if (input.action === 'selectVersion') {
         const choices = await this.releases(root)
         const selected = choices.find(row => row.id === input.releaseId)
         if (!selected) throw new Error('版本已变化，请刷新并重新选择')
         // 异步查询期间文件可能被替换；再次确认后才固定人工选择。
-        if (job.changed || !sameSignature(await safeFile(root.path, job.path), job.signature)) throw new Error('文件已变化，请重新扫描')
+        if (job.changed || !sameSignature(await safeWatchFile(root, job.path), job.signature)) throw new Error('文件已变化，请重新扫描')
         job.release = { id: selected.id, name: selected.name, version: { name: selected.name, resolution: selected.resolution, dynamicRange: selected.dynamicRange } }
       } else delete job.release
       delete job.versionReview
       job.status = 'queued'; job.manuallyPaused = false; job.error = ''
     } else if (['resume', 'confirm'].includes(input.action)) {
       if (!root || job.changed || !['failed', 'paused', 'review'].includes(job.status)) throw new Error('当前任务不能恢复，请重新扫描')
-      if (!sameSignature(await safeFile(root.path, job.path), job.signature)) throw new Error('文件已变化，请重新扫描')
+      if (!sameSignature(await safeWatchFile(root, job.path), job.signature)) throw new Error('文件已变化，请重新扫描')
       if (root.work.mediaType === 'tv') {
         const episode = input.episodeNumber ?? job.episodeNumber
         if ((episode !== undefined || input.action === 'confirm' || job.fileKey)

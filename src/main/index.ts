@@ -76,7 +76,7 @@ else {
             case 'setRetention': await svc.setRetention(payload); break
             case 'toggleWatch': await svc.toggleWatch(payload); break
             case 'removeWatch': {
-              const result = await dialog.showMessageBox(currentWindow, { type: 'question', message: '移除这个监控目录？', detail: '停止该目录的未完成任务，保留本地文件、网盘文件和任务历史。', buttons: ['保留', '移除监控'], cancelId: 0, defaultId: 0 })
+              const result = await dialog.showMessageBox(currentWindow, { type: 'question', message: '移除这个监控任务？', detail: '停止此任务下所有本地目录的监控和未完成任务，保留本地文件、网盘文件和任务历史。', buttons: ['保留', '移除监控'], cancelId: 0, defaultId: 0 })
               if (result.response === 1) await svc.removeWatch(payload)
               break
             }

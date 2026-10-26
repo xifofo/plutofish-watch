@@ -1,6 +1,6 @@
 /** 上传初始化、续传与最终登记前再核对扫描时的文件身份，防止校验后被同大小文件替换。 */
 import { PlutoFishConnection } from '../../vendor/publisher/src/integrations/plutofish/connection'
-import { safeFile, sameSignature } from './files'
+import { safeWatchFile, sameSignature } from './files'
 import type { WatchStore } from './store'
 
 type Request = Parameters<PlutoFishConnection['request']>
@@ -28,6 +28,6 @@ export function validateWatchedFile(store: WatchStore) {
     const job = store.data.jobs.find(j => j.fileKey === key && !j.changed && j.status !== 'cancelled')
     const root = store.rootFor(job)
     if (!job || !root?.enabled || store.data.uploadsPaused || job.manuallyPaused) throw new Error('成品任务已停止，不能继续上传')
-    if (!sameSignature(await safeFile(root.path, job.path), job.signature)) throw new Error('成品在上传期间发生变化，已停止原任务')
+    if (!sameSignature(await safeWatchFile(root, job.path), job.signature)) throw new Error('成品在上传期间发生变化，已停止原任务')
   }
 }

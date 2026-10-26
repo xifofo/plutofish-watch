@@ -1,7 +1,8 @@
 /** 只读取根目录内的普通媒体文件；不跟随符号链接，不把失联挂载当作删除。 */
 import { lstat, readdir, realpath } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import type { Signature } from '../shared/model'
+import type { Signature, WatchInput } from '../shared/model'
+import { watchPaths } from '../shared/watch-paths'
 
 export const signature = (s: Signature): Signature => ({
   size: s.size, mtimeMs: s.mtimeMs, ctimeMs: s.ctimeMs, ino: s.ino, dev: s.dev,
@@ -13,6 +14,18 @@ export function within(root: string, path: string): boolean {
   const rel = relative(root, path)
   return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`))
 }
+
+export const watchPathFor = (root: WatchInput, path: string): string | undefined =>
+  watchPaths(root).find(directory => within(directory, path))
+
+export function requiredWatchPath(root: WatchInput, path: string): string {
+  const directory = watchPathFor(root, path)
+  if (!directory) throw new Error('文件已不属于监控目录，请重新检查')
+  return directory
+}
+
+export const safeWatchFile = async (root: WatchInput, path: string): Promise<Signature> =>
+  safeFile(requiredWatchPath(root, path), path)
 
 export async function canonicalRoot(input: string): Promise<string> {
   if (typeof input !== 'string' || !isAbsolute(input) || input.includes('\0')) throw new Error('请选择有效的本地目录')

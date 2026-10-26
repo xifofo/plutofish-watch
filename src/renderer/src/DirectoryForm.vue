@@ -7,6 +7,7 @@ import SourceFields from './SourceFields.vue'
 import DirectoryRecognition from './DirectoryRecognition.vue'
 import DirectoryCreateDialog from './DirectoryCreateDialog.vue'
 import { adjustCreationTarget, creationSegments, directoryCreated, directoryCreationPending } from '../../shared/directory-creation'
+import { watchPaths } from '../../shared/watch-paths'
 
 const props = defineProps<{ state: Snapshot; busy: boolean; initial?: WatchRoot }>()
 const emit = defineEmits<{ save: [input: WatchInput]; back: [] }>()
@@ -15,6 +16,9 @@ const form = reactive<WatchInput>(props.initial ? JSON.parse(JSON.stringify({ ..
   sourceAccountId: props.state.connection.identity?.sourceAccount.id ?? '', seasonNumber: 1,
   versionMode: 'auto', releaseId: '', directoryId: '0', directoryPath: '/', includeExisting: true, stableSeconds: 30,
 })
+const localPaths = ref(watchPaths(form))
+watch(localPaths, paths => { form.path = paths[0] ?? ''; form.additionalPaths = paths.slice(1) }, { deep: true, flush: 'sync' })
+const hasNewPaths = computed(() => !props.initial || localPaths.value.some(path => !watchPaths(props.initial!).includes(path)))
 const choices = ref<Release[]>([]), loading = ref(false), error = ref(''), queried = ref(false)
 const recognitionPending = ref(false), pickerGeneration = ref(0), lastRecognitionDraft = ref('')
 const recognizedCategory = ref<{ value: string; label: string }>()
@@ -71,8 +75,8 @@ async function perform(fn: () => Promise<void>) {
   try { await fn() } catch (e) { error.value = e instanceof Error ? e.message : '操作失败' }
   finally { loading.value = false }
 }
-async function chooseDirectory() {
-  await perform(async () => { const path = await window.plutoWatch.chooseDirectory(); if (path) form.path = path })
+async function chooseDirectory(index: number) {
+  await perform(async () => { const path = await window.plutoWatch.chooseDirectory(); if (path) localPaths.value[index] = path })
 }
 async function query() {
   await perform(async () => {
@@ -120,15 +124,21 @@ function submit() {
 <template>
   <button class="link back" :disabled="!!creationDialog" @click="emit('back')"><Icon name="back" :size="16" />返回监控目录</button>
   <div class="page-heading"><h1>{{ initial ? '编辑监控目录' : '添加监控目录' }}</h1></div>
-  <p v-if="initial" class="notice">未开始发布的文件采用新配置；已开始或完成的任务继续沿用原配置。更换本地目录会停止原目录中未开始发布的任务。</p>
+  <p v-if="initial" class="notice">未开始发布的文件采用新配置；已开始或完成的任务继续沿用原配置。移除或更换本地目录会停止该目录中未开始发布的任务，保留目录继续监控。</p>
   <div v-if="error" role="alert" class="notice error">{{ error }}</div>
   <form @submit.prevent="submit">
     <fieldset :disabled="busy || loading || !!creationDialog">
       <section class="panel form-section">
-        <div class="section-label"><span class="step">1</span><div><h2>本地目录</h2></div></div>
-        <label>目录路径<div class="input-action"><input v-model="form.path" required placeholder="选择包含视频文件的目录" /><button type="button" class="button secondary" @click="chooseDirectory"><Icon name="folder" :size="17" />选择目录</button></div></label>
+        <h2 class="section-heading">本地目录</h2>
+        <div class="local-directories">
+          <div v-for="(_, index) in localPaths" :key="index" class="local-directory">
+            <div class="input-action"><input :id="`local-path-${index}`" v-model="localPaths[index]" required :aria-label="`本地目录 ${index + 1}`" placeholder="选择包含视频文件的目录" /><button type="button" class="button secondary" :aria-label="`选择本地目录 ${index + 1}`" @click="chooseDirectory(index)"><Icon name="folder" :size="17" />选择目录</button><button v-if="localPaths.length > 1" type="button" class="link muted" :aria-label="`移除本地目录 ${index + 1}`" @click="localPaths.splice(index, 1)">移除</button></div>
+          </div>
+        </div>
+        <button type="button" class="link add-local-directory" @click="localPaths.push('')"><Icon name="plus" :size="15" />添加本地目录</button>
+        <p v-if="localPaths.length > 1" class="hint multi-directory-hint">所有目录共用同一作品{{ form.work.mediaType === 'tv' ? '和季' : '' }}。<template v-if="!initial">按第一个目录识别。</template></p>
         <div class="form-grid"><label>文件稳定等待（秒）<input v-model.number="form.stableSeconds" type="number" min="10" max="3600" required /></label>
-          <label class="checkbox"><input v-model="form.includeExisting" type="checkbox" :disabled="!!initial && form.path === initial.path" /><span>首次补传历史文件<small>{{ initial && form.path === initial.path ? '原目录的历史文件请在列表中点击“补传历史”' : '关闭后，仅处理后续新增或修改的文件' }}</small></span></label></div>
+          <label class="checkbox"><input v-model="form.includeExisting" type="checkbox" :disabled="!hasNewPaths" /><span>首次补传历史文件<small v-if="!hasNewPaths">原目录请在列表中点击“补传历史”</small><small v-else-if="initial">仅作用于新加入的目录</small></span></label></div>
       </section>
       <section class="panel form-section">
         <h2 class="section-heading">作品与版本</h2>
@@ -141,20 +151,17 @@ function submit() {
         </div>
         <WorkPicker :key="pickerGeneration" v-model:title="form.title" v-model:tmdb-id="form.work.tmdbId" :media-type="form.work.mediaType" :source-account-id="form.sourceAccountId" @select="selectedWork" />
         <div class="version-mode"><label>版本归类<select v-model="form.versionMode" aria-label="版本归类"><option value="auto">自动归类</option><option value="fixed">固定版本</option></select></label></div>
-        <template v-if="form.versionMode === 'auto'"><p class="hint">匹配已有版本，无匹配时自动新增；来源不明待确认。</p><details class="help-details"><summary>目录来源预设</summary><SourceFields v-model="form.sourcePreset" /><p class="hint">文件名优先，预设补缺。网络片源需平台；光盘来源可留空。</p></details></template>
+        <details v-if="form.versionMode === 'auto'" class="help-details"><summary>目录来源预设</summary><SourceFields v-model="form.sourcePreset" /><p class="hint">仅补充文件名缺失的来源；网络片源需填写平台。</p></details>
         <div v-else class="input-action version-row"><label>固定版本<select v-model="form.releaseId" required><option value="" disabled>{{ queried ? '请选择已有版本' : '先查询作品的已有版本' }}</option><option v-for="r in choices" :key="r.id" :value="r.id">{{ r.name }}{{ r.latestEpisode !== undefined ? ` · 更新至 ${r.latestEpisode} 集` : '' }}</option></select></label>
           <button type="button" class="button secondary" :disabled="!form.work.tmdbId" @click="query">{{ loading ? '查询中…' : '查询版本' }}</button></div>
         <p v-if="queried && !choices.length && form.versionMode !== 'auto'" class="hint warning">暂无已有版本，可切换自动归类。</p>
-        <details v-else class="help-details"><summary>集号识别规则</summary><p class="hint">支持 S01E02、E02、EP02、第2集；无法识别或季号不符时需手动确认。</p></details>
       </section>
       <section class="panel form-section">
-        <div class="section-label"><span class="step">3</span><div><h2>网盘目标</h2></div></div>
-        <div class="form-grid"><label>目标目录 ID<input v-model="form.directoryId" required pattern="0|[1-9][0-9]{0,39}" @input="manualDirectory" /></label><label>目标路径<div class="input-action"><input v-model="form.directoryPath" placeholder="/" /><button type="button" class="button secondary" @click="browse()">浏览网盘</button></div></label></div>
-        <p class="hint">0 为根目录；文件平铺上传，不复制本地目录结构。</p>
+        <h2 class="section-heading">网盘目标</h2>
+        <div class="form-grid cloud-target"><label>目录 ID<input v-model="form.directoryId" required pattern="0|[1-9][0-9]{0,39}" title="0 为根目录" @input="manualDirectory" /></label><label>上传路径<div class="input-action"><input v-model="form.directoryPath" placeholder="/" /><button type="button" class="button secondary" @click="browse()">浏览网盘</button></div></label></div>
         <div v-if="canCreate" class="directory-create">
-          <div class="directory-preview"><span>{{ alreadyCreated ? '已创建并选为上传目录' : '默认创建路径' }}</span><p>{{ createPreview }}</p></div>
+          <div class="directory-preview"><span>{{ alreadyCreated ? '上传位置' : '新建路径' }}</span><p>{{ createPreview }}</p></div>
           <button type="button" class="button secondary" :disabled="alreadyCreated || recognitionPending" @click="createFolders"><Icon :name="alreadyCreated ? 'check' : 'folder'" :size="17" />{{ alreadyCreated ? '文件夹已创建' : '在网盘创建文件夹' }}</button>
-          <p class="hint">{{ alreadyCreated ? '后续使用这个目录 ID，作品改名不会更改文件夹。' : '先选择上级目录，确认完整路径后创建并选为上传位置。' }}</p>
           <p v-if="creationPending" class="hint warning">请创建本季文件夹或手动选择上传目录。</p>
         </div>
         <div v-if="showCloud && cloud" class="cloud-picker">
@@ -165,12 +172,23 @@ function submit() {
           <div class="form-footer"><button type="button" class="button secondary" @click="showCloud = false">关闭</button><button type="button" class="button primary" @click="selectCloud">选用当前目录</button></div>
         </div>
       </section>
-      <div class="form-footer"><span class="hint">{{ initial ? '保存后保留目录原来的监控或暂停状态' : '自动上传 · 保留原文件' }}</span><button class="button primary" type="submit" :disabled="recognitionPending || creationPending || !form.work.tmdbId || !form.title || (form.versionMode !== 'auto' && !form.releaseId)"><Icon :name="initial ? 'check' : 'plus'" :size="18" />{{ busy ? '正在保存…' : initial ? '保存修改' : '创建并开始监控' }}</button></div>
+      <div class="form-footer submit-row"><button class="button primary" type="submit" :disabled="recognitionPending || creationPending || !form.work.tmdbId || !form.title || (form.versionMode !== 'auto' && !form.releaseId)"><Icon :name="initial ? 'check' : 'plus'" :size="18" />{{ busy ? '正在保存…' : initial ? '保存修改' : '创建并开始监控' }}</button></div>
     </fieldset>
   </form>
   <DirectoryCreateDialog v-if="creationDialog" :input="creationDialog.input" :category-label="creationDialog.categoryLabel" @close="creationDialog = undefined" @created="createdFolders" />
 </template>
 <style scoped>
+.section-heading{margin-bottom:18px}
+.local-directories{display:grid;gap:12px}
+.local-directory .input-action input,.local-directory .input-action .button{margin-top:0}
+.local-directory .input-action input{min-width:0}
+.local-directory .input-action button{flex-shrink:0}
+.add-local-directory{display:inline-flex;align-items:center;gap:6px;margin-top:14px}
+.multi-directory-hint{margin-top:10px}
+.cloud-target{grid-template-columns:minmax(120px,1fr) minmax(0,3fr);margin-top:0}
+.submit-row{justify-content:flex-end}
+@media(max-width:880px){.cloud-target{grid-template-columns:1fr}}
+@media(max-width:700px){.local-directory .input-action{flex-wrap:wrap}.local-directory .input-action input{flex-basis:100%}}
 .version-mode{margin:20px 0 10px}
 .directory-create{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
 .directory-preview{background:var(--surface-subtle);border-radius:7px;padding:12px 14px;margin-bottom:12px;overflow-wrap:anywhere}

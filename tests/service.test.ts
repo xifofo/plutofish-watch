@@ -1,6 +1,6 @@
 /** 主进程服务回归：临时目录、模拟系统加密与本机 HTTP，验证编辑与恢复的完整调用链。 */
 import { afterEach, expect, mock, test } from 'bun:test'
-import { mkdtemp, mkdir, writeFile, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, realpath, rm, rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { createServer } from 'node:http'
@@ -40,7 +40,7 @@ async function setup() {
     sourceAccountId: 's', versionMode: 'auto', releaseId: '', directoryId: '0', directoryPath: '/', includeExisting: true, stableSeconds: 10 })
   const root = service.store.data.watches[0], job = service.store.data.jobs[0]
   const observation = () => service.store.data.observations[root.id][file]
-  return { service, root, job, observation, calls }
+  return { service, root, job, observation, calls, temp }
 }
 
 test('延长稳定等待时间后，已排队但尚未发布的文件重新检查稳定窗口', async () => {
@@ -99,12 +99,33 @@ test('界面先完成连接后，启动检测结束不能再次验证并打断�
   expect(service.snapshot().connection.status).toBe('verified')
 })
 
+test('一个监控任务支持超过两个目录，保存恢复并拒绝重复、嵌套、数据目录和空路径', async () => {
+  const { service, root, job, temp } = await setup()
+  const paths = [join(temp, 'second'), join(temp, 'third'), join(temp, 'fourth')]
+  for (const [index, path] of paths.entries()) { await mkdir(path); await writeFile(join(path, `E0${index + 2}.mp4`), 'offline fixture') }
+  await service.updateWatch({ id: root.id, watch: { ...root, additionalPaths: paths } })
+  expect(root.additionalPaths).toEqual(paths)
+  expect(service.store.data.jobs).toHaveLength(4)
+  expect(service.store.data.jobs[0].id).toBe(job.id)
+  for (const additionalPaths of [[root.path], [paths[0], paths[0]], [temp], [join(temp, 'app')], [''], 'invalid', [1]]) {
+    await expect(service.updateWatch({ id: root.id, watch: { ...root, additionalPaths } as never })).rejects.toThrow()
+    expect(root.additionalPaths).toEqual(paths)
+  }
+  await expect(service.add({ ...root, path: paths[0], additionalPaths: [] })).rejects.toThrow('监控目录不能重复')
+  // 删除第一个目录后，原第二个目录成为首个；原第一目录的未开始任务取消，其他任务保留。
+  await service.updateWatch({ id: root.id, watch: { ...root, path: paths[0], additionalPaths: paths.slice(1) } })
+  expect(job.status).toBe('cancelled')
+  expect(service.store.data.jobs.slice(1).every(j => j.status === 'waiting')).toBe(true)
+})
+
 test('固定版本的剧集目录首次未补传时，按 PlutoFish 已就绪集号只补版本里缺的集', async () => {
   const temp = await realpath(await mkdtemp(join(tmpdir(), 'watch-history-')))
   cleanup.push(() => rm(temp, { recursive: true, force: true }))
   const media = join(temp, 'media'); await mkdir(media)
   for (const n of [1, 2, 3, 4, 5]) await writeFile(join(media, `Show.S01E0${n}.mp4`), `episode ${n}`)
   await writeFile(join(media, 'Show.S01E00.mp4'), 'special before the version starts')
+  const extra = join(temp, 'Season 9', 'extra'); await mkdir(extra, { recursive: true })
+  await rename(join(media, 'Show.S01E04.mp4'), join(extra, 'Show.S01E04.mp4'))
   const release = { id: 'a'.repeat(32), name: 'S01.1080p.TX.WEB-DL.HEVC', resolution: '1080p', dynamicRange: 'SDR', status: 'published', latestEpisode: 5, episodes: [1, 2, 3, 5] }
   let queries = 0
   const server = createServer(async (req, res) => {
@@ -121,12 +142,13 @@ test('固定版本的剧集目录首次未补传时，按 PlutoFish 已就绪集
   const service = new WatchService(join(temp, 'app'), () => {})
   cleanup.push(() => service.close())
   await service.connect({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, key: 'offline-only' })
-  await service.add({ path: media, title: '尚公主', work: { mediaType: 'tv', tmdbId: '286171', category: 'tv' }, seasonNumber: 1,
+  await service.add({ path: media, additionalPaths: [extra], title: '尚公主', work: { mediaType: 'tv', tmdbId: '286171', category: 'tv' }, seasonNumber: 1,
     sourceAccountId: 's', versionMode: 'fixed', releaseId: release.id, directoryId: '0', directoryPath: '/', includeExisting: false, stableSeconds: 10 })
   expect(service.store.data.jobs).toHaveLength(0)
   const now = Date.now()
   expect(await service.syncHistory(now)).toBe(1)
   expect(service.store.data.jobs.map(j => j.relativePath)).toEqual(['Show.S01E04.mp4'])
+  expect(service.store.data.jobs[0].path).toBe(join(extra, 'Show.S01E04.mp4'))
   const root = service.store.data.watches[0]!
   const ignored = Object.entries(service.store.data.observations[root.id]!).filter(([, o]) => o.ignored).map(([path]) => relative(media, path)).sort()
   expect(ignored).toEqual(['Show.S01E00.mp4', 'Show.S01E01.mp4', 'Show.S01E02.mp4', 'Show.S01E03.mp4', 'Show.S01E05.mp4'])

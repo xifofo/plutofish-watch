@@ -26,6 +26,8 @@ export type WorkPage = { items: WorkOption[]; page: number; totalPages: number; 
 export type Release = { id: string; name: string; resolution: string; dynamicRange: string; status: string; latestEpisode?: number; episodes?: number[] }
 export type WatchInput = {
   path: string; title: string; sourceAccountId: string; work: Work; seasonNumber?: number
+  /** 与首个目录共用发布配置；旧记录省略时仍为单目录，不限制目录数量。 */
+  additionalPaths?: string[]
   releaseId: string; directoryId: string; directoryPath: string
   /** 手动创建的界面记忆；不参与上传解析，也不会自动创建或恢复目录。 */
   directoryCreation?: DirectoryCreation
@@ -41,6 +43,8 @@ export type DirectoryCreation = {
 export type WatchRoot = WatchInput & {
   id: string; binding: Binding; releaseName: string; releaseVersion?: { name: string; resolution: string; dynamicRange: string }; enabled: boolean
   initialized: boolean; createdAt: string; lastScan?: string; error?: string
+  /** 每个本地目录分别保存首次扫描基线；旧记录从 initialized 继承。 */
+  initializedPaths?: string[]
   /** 上次按 PlutoFish 版本进度核对首次扫描忽略的历史文件的时间 */
   progressAt?: number
 }

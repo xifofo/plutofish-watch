@@ -12,7 +12,7 @@ import { fingerprint } from '../../vendor/publisher/src/integrations/plutofish/u
 import type { WatchJob, WatchRoot } from '../shared/model'
 import { WatchStore } from './store'
 import { automaticReleaseKey, releaseKey, stableKey, targetKey } from './bindings'
-import { safeFile, sameSignature, within } from './files'
+import { safeWatchFile, sameSignature, watchPathFor } from './files'
 import { validateRetention } from '../shared/retention'
 import { findProbe, probeFile } from './probe'
 import { watchVersionChoices } from './versions'
@@ -112,10 +112,11 @@ export class WatchPublisher {
   private canDelete(state: PublicationState): boolean {
     const job = this.store.data.jobs.find(j => j.fileKey === state.draft.fileKey)
     const root = this.store.data.watches.find(w => w.id === job?.watchId)
+    const directory = root && job ? watchPathFor(root, job.path) : undefined
     if (!job || !root || !this.eligible(root) || job.status !== 'completed' || job.changed || job.manuallyPaused
-      || !job.synced || !job.ed2kSaved || job.path !== state.draft.output || !within(root.path, job.path)) return false
+      || !job.synced || !job.ed2kSaved || job.path !== state.draft.output || !directory) return false
     // 监控根目录或中间目录被改成链接时，不能沿旧路径清理其他目录里的文件。
-    try { return realpathSync(root.path) === root.path && realpathSync(job.path) === resolve(job.path) }
+    try { return realpathSync(directory) === directory && realpathSync(job.path) === resolve(job.path) }
     catch { return false }
   }
   private scheduleRetry(job: WatchJob, retryAfterMs = 0, failureId?: string): void {
@@ -160,7 +161,7 @@ export class WatchPublisher {
     job.status = 'preparing'; job.error = ''; this.store.save(); this.changed()
     try {
       this.connection.assertBinding(root.binding)
-      const before = await safeFile(root.path, job.path)
+      const before = await safeWatchFile(root, job.path)
       if (!sameSignature(before, job.signature)) throw new Error('文件已改变，等待目录重新扫描')
       const measured = await probeFile(findProbe(this.store.data.ffprobe), job.path, before.size, signal)
       if (!job.release || (!job.release.id && job.release.key)) {
@@ -203,7 +204,7 @@ export class WatchPublisher {
       const releaseId = job.release.id
       const releaseIdentity = releaseId ?? job.release.key!
       const hash = await fingerprint(job.path, signal)
-      const after = await safeFile(root.path, job.path)
+      const after = await safeWatchFile(root, job.path)
       if (!sameSignature(before, after)) throw new Error('文件在检测期间改变，等待重新扫描')
       signal.throwIfAborted()
       if (!this.eligible(root) || job.status !== 'preparing') return
@@ -219,7 +220,7 @@ export class WatchPublisher {
         && j.signature.size === hash.size && !j.changed && j.status !== 'cancelled')
       if (other) {
         const oldRoot = this.store.rootFor(other)
-        const available = oldRoot?.enabled && await safeFile(oldRoot.path, other.path).then(sig => sameSignature(sig, other.signature)).catch(() => false)
+        const available = oldRoot?.enabled && await safeWatchFile(oldRoot, other.path).then(sig => sameSignature(sig, other.signature)).catch(() => false)
         if (available) {
           job.status = 'duplicate'; job.error = other.status === 'failed' ? '相同内容已有失败任务，请重试原任务' : '相同内容已处理或正在队列中'; job.sha1 = hash.sha1
           job.duplicateOf = other.id; job.ed2k = other.ed2k; job.ed2kSaved = other.ed2kSaved
@@ -237,7 +238,7 @@ export class WatchPublisher {
           sha1: hash.sha1, sizeBytes: hash.size,
         }, signal)
         signal.throwIfAborted()
-        if (!sameSignature(await safeFile(root.path, job.path), before)) throw new Error('文件在查重期间改变，等待重新扫描')
+        if (!sameSignature(await safeWatchFile(root, job.path), before)) throw new Error('文件在查重期间改变，等待重新扫描')
         if (!result || !['missing', 'existing', 'conflict'].includes(result.status)) throw new Error('PlutoFish 查重结果无效，已停止上传')
         if (result.status === 'conflict') throw new Error('此版本的同一集或电影已有其他内容，请检查版本绑定')
         if (result.status === 'existing') {
