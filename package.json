@@ -40,7 +40,7 @@
     "files": ["out/**", "resources/icon.png", "package.json"],
     "npmRebuild": false,
     "toolsets": { "nsis": "1.2.1" },
-    "mac": { "category": "public.app-category.utilities", "identity": null, "icon": "resources/icon.icns" },
+    "mac": { "category": "public.app-category.utilities", "identity": null, "icon": "resources/icon.icns", "artifactName": "PlutoFish-Watch-${version}-macos-${arch}.${ext}" },
     "win": { "target": "nsis", "icon": "resources/icon.ico" },
     "nsis": { "artifactName": "PlutoFish-Watch-${version}-windows-${arch}-setup.${ext}" },
     "linux": { "target": "AppImage", "category": "Utility", "icon": "resources/icon.png" }

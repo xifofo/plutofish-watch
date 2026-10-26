@@ -1,0 +1,3 @@
+* text=auto eol=lf
+# 发布引擎逐字节校验，Windows 检出也不能转换快照换行符。
+vendor/publisher/src/** -text
