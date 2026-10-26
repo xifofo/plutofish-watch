@@ -51,7 +51,7 @@ function editSelected() {
   <div class="work-picker">
     <template v-if="selected">
       <div class="selected-work">
-        <div><strong>{{ selected.title }}</strong><small>{{ selected.year ?? '年份未知' }} · {{ mediaType === 'tv' ? '剧集' : '电影' }} · TMDB {{ selected.tmdbId }}</small></div>
+        <div><strong>{{ selected.title }}</strong><small><template v-if="selected.year">{{ selected.year }} · </template>{{ mediaType === 'tv' ? '剧集' : '电影' }} · TMDB {{ selected.tmdbId }}</small></div>
         <div class="selected-actions"><button type="button" class="link" @click="editSelected">修改信息</button><button type="button" class="link" @click="clear">重新选择</button></div>
       </div>
     </template>

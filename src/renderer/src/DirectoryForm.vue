@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue'
-import type { Snapshot, WatchInput, WatchRoot, Release, DirectoryPage, Recognition } from '../../shared/model'
+import type { Snapshot, WatchInput, WatchRoot, Release, DirectoryPage, Recognition, RecognizedWork } from '../../shared/model'
 import Icon from './Icon.vue'
 import WorkPicker from './WorkPicker.vue'
 import SourceFields from './SourceFields.vue'
@@ -27,9 +27,15 @@ const categories = computed(() => {
 /** 只消费可安全回填的结果；重建作品选择器以避免旧类型监听清除新草稿。 */
 function applyRecognition(result: Recognition) {
   if (props.busy || loading.value || creationDialog.value || !result.canAutoFill || !result.workTarget || !result.work) return
-  form.work = { ...result.workTarget }; form.title = result.work.title
-  form.seasonNumber = result.work.mediaType === 'tv' ? result.parsed.seasonNumber : undefined
-  recognizedCategory.value = { value: result.workTarget.category, label: result.work.category.label }
+  applyConfirmedWork(result.work, result.parsed.seasonNumber)
+}
+/** 人工确认只采用选中的身份；未匹配分类和不确定季号留空，避免沿用旧作品的信息。 */
+function applyConfirmedWork(work: RecognizedWork, seasonNumber: number | undefined) {
+  if (props.busy || loading.value || creationDialog.value) return
+  const category = work.category.status === 'matched' ? work.category.value : ''
+  form.work = { mediaType: work.mediaType, tmdbId: work.tmdbId, category }; form.title = work.title
+  form.seasonNumber = work.mediaType === 'tv' ? seasonNumber : undefined
+  recognizedCategory.value = category ? { value: category, label: work.category.label || work.category.name || category } : undefined
   pickerGeneration.value++
   lastRecognitionDraft.value = draftKey.value
 }
@@ -125,10 +131,10 @@ function submit() {
           <label class="checkbox"><input v-model="form.includeExisting" type="checkbox" :disabled="!!initial && form.path === initial.path" /><span>首次补传历史文件<small>{{ initial && form.path === initial.path ? '原目录的历史文件请在列表中点击“补传历史”' : '关闭后，仅处理后续新增或修改的文件' }}</small></span></label></div>
       </section>
       <section class="panel form-section">
-        <div class="section-label"><span class="step">2</span><div><h2>作品与版本</h2></div></div>
-        <DirectoryRecognition v-if="!initial" :path="form.path" :source-account-id="form.sourceAccountId" :connection-key="`${state.connection.url}:${state.connection.identity?.id ?? ''}`" :draft-key="draftKey" :can-replace="(!form.title && !form.work.tmdbId) || lastRecognitionDraft === draftKey" :disabled="busy || loading || !!creationDialog" @pending="recognitionPending = $event" @apply="applyRecognition" />
+        <h2 class="section-heading">作品与版本</h2>
+        <DirectoryRecognition v-if="!initial" :path="form.path" :source-account-id="form.sourceAccountId" :connection-key="`${state.connection.url}:${state.connection.identity?.id ?? ''}`" :draft-key="draftKey" :can-replace="(!form.title && !form.work.tmdbId) || lastRecognitionDraft === draftKey" :disabled="busy || loading || !!creationDialog" @pending="recognitionPending = $event" @apply="applyRecognition" @confirm="applyConfirmedWork" />
         <div class="form-grid">
-          <label>资源分类<select v-model="form.work.category" required><option v-for="c in categories" :key="c.value" :value="c.value">{{ c.label }}</option></select></label>
+          <label>资源分类<select v-model="form.work.category" required><option value="" disabled>请选择资源分类</option><option v-for="c in categories" :key="c.value" :value="c.value">{{ c.label }}</option></select></label>
           <label>作品类型<select v-model="form.work.mediaType"><option value="tv">剧集</option><option value="movie">电影</option></select></label>
           <label v-if="form.work.mediaType === 'tv'">季号<input v-model.number="form.seasonNumber" type="number" min="0" max="10000" required /></label>
           <label>上传源账号<select v-model="form.sourceAccountId" required><option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }} · {{ s.alias }}</option></select></label>
