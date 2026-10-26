@@ -28,7 +28,7 @@ function identity(value: unknown): PublisherIdentity {
   const capabilities = v.capabilities as Record<string, unknown> | undefined
   const options = {
     ...(categories === undefined ? {} : { categories: (categories as Array<{value: string; label: string}>).map(c => ({ value: c.value, label: c.label })) }),
-    ...(capabilities === undefined ? {} : { capabilities: { uploadClientGrouping: capabilities !== null && typeof capabilities === 'object' && !Array.isArray(capabilities) && capabilities.uploadClientGrouping === true } }),
+    ...(capabilities === undefined ? {} : { capabilities: { uploadClientGrouping: capabilities !== null && typeof capabilities === 'object' && !Array.isArray(capabilities) && capabilities.uploadClientGrouping === true, taskDiagnostics: capabilities !== null && typeof capabilities === 'object' && !Array.isArray(capabilities) && capabilities.taskDiagnostics === true } }),
   }
   const source = (value: unknown) => {
     const a = value as Record<string, unknown> | null

@@ -48,6 +48,7 @@ export class PublicationWorker {
   private closed = false
   private readonly syncAbort = new AbortController()
   private readonly retryAt = new Map<string, number>()
+  private readonly failureRetryAt = new Map<string, number>()
   private readonly syncErrors = new Map<string, PublisherError>()
 
   constructor(private readonly connection: PlutoFishConnection, private readonly changed: (draft: PublicationDraft, transient?: boolean) => void,
@@ -60,6 +61,7 @@ export class PublicationWorker {
       this.store.removeCompleted(state)
       this.states.delete(state.draft.fileKey)
       this.retryAt.delete(state.draft.fileKey)
+      this.failureRetryAt.delete(state.draft.fileKey)
       this.syncErrors.delete(state.draft.fileKey)
     }, options.beforeCleanup, state => this.retention.deleted(state))
     this.proofs = new PublicationProofs(connection, (state, message) => this.publish(state, message), state => this.store.save(state), state => this.cleanup.missing(state))
@@ -140,6 +142,10 @@ export class PublicationWorker {
     if (patch.stage && patch.stage !== state.snapshot.stage && state.draft.progress) state.draft.progress.phase = undefined
     if (patch.stage && patch.stage !== 'failed') state.failure = undefined
     Object.assign(state.snapshot, patch, { sequence: state.snapshot.sequence + 1 })
+    if (patch.stage === 'failed') {
+      state.snapshot.errorDetails = { ...(state.failure?.diagnostic ?? { stage: '发布任务' }), occurredAt: new Date().toISOString() }
+      ;(state.pendingFailures ??= []).push(structuredClone(state.snapshot))
+    } else if (state.snapshot.stage !== 'failed') delete state.snapshot.errorDetails
     this.store.save(state)
     this.publish(state)
   }
@@ -221,21 +227,38 @@ export class PublicationWorker {
       this.proofRunning ??= this.proofs.run(() => [...this.states.values()], this.syncAbort.signal)
       for (const state of this.states.values()) {
         if (this.closed) return
-        if (state.acknowledged >= state.snapshot.sequence || (this.retryAt.get(state.draft.fileKey) ?? 0) > Date.now()) continue
-        const snapshot = structuredClone(state.snapshot)
-        try {
-          const result = await this.connection.request<{ outcome: string }>(state.draft.binding, 'tasks/report', snapshot, this.syncAbort.signal)
-          if (!['applied', 'duplicate', 'ignored'].includes(result.outcome)) throw new Error('PlutoFish 任务回执无效')
-          if (result.outcome === 'ignored') throw new Error('PlutoFish 任务序号领先本机，请恢复最新发布清单')
-          state.acknowledged = snapshot.sequence
-          this.syncErrors.delete(state.draft.fileKey)
-          this.store.save(state); this.publish(state)
-        } catch (error) {
-          this.retryAt.set(state.draft.fileKey, Date.now() + 15_000)
-          // ED2K 等后台进度刷新不能清掉仍未成功同步的错误。
-          this.syncErrors.set(state.draft.fileKey, publicationFailure(error, '同步任务状态'))
-          // 失败上报的临时故障不能覆盖原上传失败原因；待同步标志单独保留。
-          this.publish(state)
+        if ((!state.pendingFailures?.length && state.acknowledged >= state.snapshot.sequence) || (this.retryAt.get(state.draft.fileKey) ?? 0) > Date.now()) continue
+        // 历史补报单独退避，不能因旧失败回执暂不可用而阻塞已经恢复的上传。
+        const pending = state.pendingFailures ?? []
+        const historyReady = (this.failureRetryAt.get(state.draft.fileKey) ?? 0) <= Date.now()
+        const reports = historyReady ? pending.map(snapshot => ({ snapshot: structuredClone(snapshot), historical: true })) : []
+        if (state.acknowledged < state.snapshot.sequence && !pending.some(item => item.sequence === state.snapshot.sequence)) {
+          reports.push({ snapshot: structuredClone(state.snapshot), historical: false })
+        }
+        let historyBlocked = false
+        for (const { snapshot, historical } of reports) {
+          if (historical && historyBlocked) continue
+          if (this.connection.view().identity?.capabilities?.taskDiagnostics !== true) delete snapshot.errorDetails
+          try {
+            const result = await this.connection.request<{ outcome: string }>(state.draft.binding, 'tasks/report', snapshot, this.syncAbort.signal)
+            if (!['applied', 'duplicate', 'ignored'].includes(result.outcome)) throw new Error('PlutoFish 任务回执无效')
+            if (result.outcome === 'ignored' && !historical) throw new Error('PlutoFish 任务序号领先本机，请恢复最新发布清单')
+            state.acknowledged = Math.max(state.acknowledged, snapshot.sequence)
+            state.pendingFailures = state.pendingFailures?.filter(item => item.sequence !== snapshot.sequence || item.attempt !== snapshot.attempt)
+            if (historical) this.failureRetryAt.delete(state.draft.fileKey)
+            this.syncErrors.delete(state.draft.fileKey)
+            this.store.save(state); this.publish(state)
+          } catch (error) {
+            if (historical) {
+              this.failureRetryAt.set(state.draft.fileKey, Date.now() + 15_000)
+              historyBlocked = true
+            } else this.retryAt.set(state.draft.fileKey, Date.now() + 15_000)
+            // ED2K 等后台进度刷新不能清掉仍未成功同步的错误。
+            this.syncErrors.set(state.draft.fileKey, publicationFailure(error, '同步任务状态'))
+            // 失败上报的临时故障不能覆盖原上传失败原因；待同步标志单独保留。
+            this.publish(state)
+            if (!historical) break
+          }
         }
       }
       try { this.retention.tick(this.states, this.syncAbort.signal) } catch { /* 无法读取策略或保存状态时不删除成品 */ }

@@ -39,7 +39,12 @@ export function failureDetails(error: unknown, stage: string, partNumber?: numbe
 }
 
 export function httpFailureDetails(stage: string, response: Response, code: unknown): FailureDetails {
-  return failureDetails({ code, status: response.status, requestId: response.headers.get('x-request-id') }, stage)
+  const details = failureDetails({ code, status: response.status, requestId: response.headers.get('x-request-id') }, stage)
+  const providerCode = response.headers.get('x-plutofish-provider-code') ?? ''
+  const providerStatus = response.headers.get('x-plutofish-provider-status') ?? ''
+  if (/^[0-9]{1,9}$/.test(providerCode)) details.providerCode = providerCode
+  if (/^[1-5][0-9]{2}$/.test(providerStatus)) details.providerHttpStatus = Number(providerStatus)
+  return details
 }
 
 export function ossFailure(error: unknown, stage: string, partNumber?: number): PublisherError {

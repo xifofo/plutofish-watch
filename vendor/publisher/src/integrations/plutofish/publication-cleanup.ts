@@ -5,7 +5,7 @@ import type { PlutoFishConnection } from './connection.ts'
 import type { PublicationState } from './publication-state.ts'
 
 const completed = (state: PublicationState) => state.snapshot.stage === 'completed' &&
-  state.acknowledged >= state.snapshot.sequence && !!state.checkpoint?.resource && !!state.draft.output
+  !state.pendingFailures?.length && state.acknowledged >= state.snapshot.sequence && !!state.checkpoint?.resource && !!state.draft.output
 
 export class PublicationCleanup {
   private queue: string[] = []

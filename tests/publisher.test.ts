@@ -20,7 +20,7 @@ import { applyWatchEdit } from '../src/main/watch-edit'
 const disposers: Array<() => Promise<unknown>> = []
 afterEach(async () => { for (const dispose of disposers.splice(0).reverse()) await dispose() })
 
-async function setup(options: { check?: (body: any) => unknown; proofs?: boolean; releases?: (body: any) => unknown; loseFirstReport?: boolean;
+async function setup(options: { check?: (body: any) => unknown; proofs?: boolean; diagnostics?: boolean; releases?: (body: any) => unknown; loseFirstReport?: boolean;
   reply?: (path: string, body: any) => { status?: number; body?: unknown; headers?: Record<string, string> } | 'disconnect' | undefined;
   retry?: ConstructorParameters<typeof WatchPublisher>[5]; connection?: ConstructorParameters<typeof WatchConnection>[0]
 } = {}) {
@@ -51,7 +51,7 @@ async function setup(options: { check?: (body: any) => unknown; proofs?: boolean
       } })); return
     }
     let result: unknown
-    if (path === 'me') result = { id: 'publisher-1', name: '测试发布端', kind: 'publisher', sourceAccount: { id: 'source-1', name: '离线源', alias: 'main', provider: '115' }, categories: [{ value: 'tv', label: '剧集' }] }
+    if (path === 'me') result = { id: 'publisher-1', name: '测试发布端', kind: 'publisher', sourceAccount: { id: 'source-1', name: '离线源', alias: 'main', provider: '115' }, categories: [{ value: 'tv', label: '剧集' }], ...(options.diagnostics ? { capabilities: { taskDiagnostics: true } } : {}) }
     else if (path === 'files/check') result = options.check?.(payload) ?? { status: 'missing' }
     else if (path === 'releases/query') {
       result = options.releases?.(payload)
@@ -440,7 +440,7 @@ test('分片断网后自动续传原 uploadId，已确认第一片不重传，ED
 })
 
 test('上传 502 详情落盘，重启后自动重建失效会话并沿用原文件和版本完成', async () => {
-  let now = 100000, init = 0, unavailable = true, merged = 0
+  let now = 100000, init = 0, unavailable = true, merged = 0, rejectFailures = true
   const options: NonNullable<Parameters<typeof setup>[0]>['retry'] = { now: () => now, baseMs: 100, factory: () => ({ close() {}, client: {
     async initMultipartUpload() { return { uploadId: `UPLOAD-${++init}` } as any },
     async listParts(_name, id) {
@@ -454,8 +454,8 @@ test('上传 502 详情落盘，重启后自动重建失效会话并沿用原文
     },
     async completeMultipartUpload() { merged++; return { data: { state: true } } as any },
   } }) }
-  const f = await setup({ retry: options, reply: (path, body) => {
-    if (path === 'tasks/report' && body.stage === 'failed') return { status: 503 }
+  const f = await setup({ diagnostics: true, retry: options, reply: (path, body) => {
+    if (path === 'tasks/report' && body.stage === 'failed' && rejectFailures) return { status: 503 }
     if (path !== 'uploads/prepare') return undefined
     if (body.action === 'start') return { body: { dispatch: { status: 'uploading', bucket: 'bucket', object: 'original', pickCode: 'original', callback: '{}' } } }
     if (body.action === 'credentials') return { body: { credentials: { accessKeyId: 'fake', accessKeySecret: 'fake', securityToken: 'fake', expiration: new Date(Date.now() + 3600000).toISOString(), rate: 0 } } }
@@ -488,6 +488,23 @@ test('上传 502 详情落盘，重启后自动重建失效会话并沿用原文
   expect(init).toBe(2); expect(merged).toBe(1)
   expect(f.calls.filter(c => c.path === 'files/report')).toHaveLength(1)
   expect(f.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'start').every(c => c.body.taskKey === key && c.body.directoryId === '42')).toBe(true)
+  // 历史上报持续故障也不挡住恢复；成功后仍保留待补记录，重启补报原时间和序号。
+  await publisher.close()
+  const statePath = join(f.temp, 'publications', key!.replace(':', '-') + '.state.json')
+  const pending = JSON.parse(await readFile(statePath, 'utf8')).pendingFailures
+  expect(pending).toHaveLength(1)
+  expect(pending[0].errorDetails).toMatchObject(diagnostic)
+  expect(Number.isFinite(Date.parse(pending[0].errorDetails.occurredAt))).toBe(true)
+  rejectFailures = false
+  const recovered = new WatchStore(f.store.path)
+  const replay = new WatchPublisher(recovered, f.connection, f.temp, () => {}, e => { throw e }, options)
+  disposers.push(() => replay.close()); f.connection.validateFile = validateWatchedFile(recovered)
+  replay.start(); await replay.tick()
+  const reported = f.calls.filter(c => c.path === 'tasks/report' && c.body.stage === 'failed').at(-1)!.body
+  expect(reported.errorDetails).toEqual(pending[0].errorDetails)
+  expect(reported.sequence).toBe(pending[0].sequence)
+  expect(JSON.parse(await readFile(statePath, 'utf8')).pendingFailures).toEqual([])
+  expect(recovered.data.jobs[0].status).toBe('completed')
 })
 
 test('真实检测本地视频，通过模拟服务完成核验与资源登记，保留本地原文件', async () => {
@@ -999,4 +1016,39 @@ test('准备期间账号被暂停，未登记任务保留排队状态，解除�
   expect(f.calls.some(c => c.path === 'uploads/prepare' && c.body.action === 'start')).toBe(false)
   pauseDuringPrepare = false
   await until(f.publisher, () => f.job.status === 'completed')
+})
+
+test('历史候选已清理后自动重试同一任务，不需要移动文件或重建监控项', async () => {
+  let starts = 0
+  const f = await setup({ retry: { baseMs: 1, maxMs: 1 }, reply: (path, body) => {
+    if (path === 'uploads/prepare' && body.action === 'start' && ++starts === 1) {
+      return { status: 409, body: { error: { code: 'CLOUD_UPLOAD_REUSE_INVALID' } },
+        headers: { 'x-plutofish-upload-stage': 'verify_reuse', 'x-plutofish-provider-code': '430004' } }
+    }
+  } })
+  await until(f.publisher, () => f.job.status === 'completed' && f.job.synced === true)
+  const requests = f.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'start')
+  expect(requests).toHaveLength(2)
+  expect(new Set(requests.map(c => c.body.taskKey)).size).toBe(1)
+  expect(new Set(requests.map(c => c.body.directoryId))).toEqual(new Set(['42']))
+  expect(f.calls.filter(c => c.path === 'files/report')).toHaveLength(1)
+  expect(existsSync(f.file)).toBe(true)
+})
+
+test('115 普通核验拒绝持久化具体原因并停止自动重试', async () => {
+  const f = await setup({ retry: { baseMs: 1, maxMs: 1 }, reply: (path, body) => {
+    if (path === 'uploads/prepare' && body.action === 'start') {
+      return { status: 502, body: { error: { code: 'CLOUD_PROVIDER_REJECTED', message: 'PRIVATE-BODY' } },
+        headers: { 'x-plutofish-upload-stage': 'verify_reuse', 'x-plutofish-provider-code': '400123' } }
+    }
+  } })
+  await until(f.publisher, () => f.job.status === 'failed')
+  for (let i = 0; i < 10; i++) await f.publisher.tick()
+  expect(f.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'start')).toHaveLength(1)
+  expect(f.job.retry).toBeUndefined()
+  const saved = new WatchStore(join(f.temp, 'state.json')).data.jobs[0]!
+  expect(saved.errorDetails?.stage).toBe('核验历史文件')
+  expect(saved.error).toContain('115 错误码：400123')
+  expect(saved.error).not.toContain('PRIVATE')
+  expect(f.calls.find(c => c.path === 'tasks/report' && c.body.stage === 'failed')?.body.errorDetails).toBeUndefined()
 })

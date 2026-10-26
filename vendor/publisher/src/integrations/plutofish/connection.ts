@@ -129,7 +129,7 @@ export class PlutoFishConnection {
     if (key !== this.saved.key) throw new Error('发布端密钥已变化，请重试')
     if (!response.ok) {
       const failure = await response.json().catch(() => null) as { error?: { code?: string; fieldErrors?: Record<string, unknown> } } | null
-      const diagnostic = httpFailureDetails(stage, response, failure?.error?.code)
+      const diagnostic = httpFailureDetails(path === 'uploads/prepare' ? ({ prepare: '申请上传', verify: '核验网盘文件', verify_reuse: '核验历史文件', credentials: '获取上传凭据', token_refresh: '刷新网盘授权' } as Record<string, string>)[response.headers.get('x-plutofish-upload-stage') ?? ''] ?? stage : stage, response, failure?.error?.code)
       requestSignal.throwIfAborted()
       if (response.status === 422 && path !== 'tmdb/search' && path !== 'tmdb/recognize') {
         // 只展示固定字段名和业务提示，绝不把服务端正文、字段值或供应商凭据带入界面。
@@ -169,7 +169,12 @@ export class PlutoFishConnection {
       if (path === 'uploads/prepare') {
         if (failure?.error?.code === 'CLOUD_ACCESS_LIMIT') throw Object.assign(new UploadRateLimitError(), { diagnostic })
         // 使用本地固定提示，不把供应商正文或凭据送到渲染进程。
+        const providerCode = response.headers.get('x-plutofish-provider-code') ?? ''
+        const providerHint = /^[0-9]{1,9}$/.test(providerCode) ? `（115 错误码：${providerCode}）` : ''
         const messages: Record<string, string> = {
+          CLOUD_PROVIDER_REJECTED: `115 拒绝${diagnostic.stage}${providerHint}，已停止自动重试，请核对源账号和文件状态`,
+          CLOUD_FILE_NOT_FOUND: '115 原文件已不存在，请核对网盘文件；原上传任务不会自动重新创建',
+          CLOUD_UPLOAD_REUSE_INVALID: '历史文件已失效或不符合目标，已退出复用，将重试原任务进入正常上传',
           CLOUD_ACCESS_LIMIT: '115 已限制访问，自动上传已停止，请稍后手动继续',
           CLOUD_REFRESH_PAUSED: '115 凭据刷新已暂停，请在账号管理中手动刷新',
           CLOUD_UPLOAD_SEARCH_LIMIT: '115 文件搜索结果过多，已停止核验，请人工核对目标文件',
@@ -185,7 +190,7 @@ export class PlutoFishConnection {
           PUBLISHER_UPLOAD_ACCOUNT_CHANGED: '当前发布端绑定的网盘已变化，请恢复原账号后重试',
         }
         const message = messages[failure?.error?.code ?? '']
-        if (message && response.status !== 401 && response.status !== 403) throw new PublisherError(message, ['CLOUD_UPLOAD_UNCERTAIN', 'CLOUD_UPLOAD_NOT_READY'].includes(failure?.error?.code ?? ''), retryAfter(response), diagnostic)
+        if (message && response.status !== 401 && response.status !== 403) throw new PublisherError(message, ['CLOUD_UPLOAD_UNCERTAIN', 'CLOUD_UPLOAD_NOT_READY', 'CLOUD_UPLOAD_REUSE_INVALID'].includes(failure?.error?.code ?? ''), retryAfter(response), diagnostic)
         if (failure?.error?.code?.startsWith('CLOUD_') && response.status !== 401 && response.status !== 403) throw new PublisherError('115 操作已停止，请在 PlutoFish 查看失败原因后手动继续', false, undefined, diagnostic)
       }
       if (response.status === 409) {

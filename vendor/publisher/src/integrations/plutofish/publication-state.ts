@@ -10,10 +10,12 @@ export type TaskSnapshot = {
   taskKey: string; releaseKey: string; sourceAccount: string; workTarget: PublicationDraft['workTarget']; title: string
   seasonNumber?: number; episodeNumber?: number; episodeTitle?: string
   attempt: number; sequence: number; stage: 'queued' | 'downloading' | 'processing' | 'uploading' | 'paused' | 'failed' | 'cancelled' | 'completed'
-  downloadPercent: number; uploadPercent: number; sizeBytes: number; uploadedBytes: number; errorMessage?: string
+  downloadPercent: number; uploadPercent: number; sizeBytes: number; uploadedBytes: number; errorMessage?: string; errorDetails?: FailureDetails
 }
 export type PublicationState = {
-  draft: PublicationDraft; snapshot: TaskSnapshot; acknowledged: number; checkpoint?: UploadCheckpoint
+  draft: PublicationDraft; snapshot: TaskSnapshot;
+  /** 失败快照按顺序补报，不能被后续重试或完成状态覆盖。 */
+  pendingFailures?: TaskSnapshot[]; acknowledged: number; checkpoint?: UploadCheckpoint
   /** 首次发布成功的时间不随重试、校验、重启刷新；旧清单首次升级时起算。 */
   completedAt?: number
   failure?: { retryable: boolean; retryAfterMs?: number; diagnostic?: FailureDetails }
@@ -66,7 +68,7 @@ export class PublicationStore {
   }
   /** 仅用于已上报完成且服务端确认清理的成品；先删草稿再删续办状态，失败可重试。 */
   removeCompleted(state: PublicationState): void {
-    if (state.snapshot.stage !== 'completed' || state.acknowledged < state.snapshot.sequence || !state.checkpoint?.resource) throw new Error('未完成发布不能清理续办记录')
+    if (state.snapshot.stage !== 'completed' || state.pendingFailures?.length || state.acknowledged < state.snapshot.sequence || !state.checkpoint?.resource) throw new Error('未完成发布不能清理续办记录')
     this.lease()
     const name = this.name(state.draft.fileKey)
     rmSync(join(this.directory, name.replace('.state.json', '.json')), { force: true })

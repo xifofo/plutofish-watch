@@ -1,5 +1,5 @@
 /** 重试依据结构化错误，不依赖展示文案，也不保存供应商原始错误。 */
-export type FailureDetails = { stage: string; code?: string; httpStatus?: number; requestId?: string; partNumber?: number }
+export type FailureDetails = { stage: string; code?: string; httpStatus?: number; requestId?: string; partNumber?: number; providerCode?: string; providerHttpStatus?: number; occurredAt?: string }
 export class PublisherError extends Error {
   constructor(message: string, readonly retryable = false, readonly retryAfterMs?: number, public diagnostic?: FailureDetails) {
     super(message)
