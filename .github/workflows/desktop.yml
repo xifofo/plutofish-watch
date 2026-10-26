@@ -36,7 +36,20 @@ jobs:
             echo "::error::标签必须与 package.json 的版本一致：v$version"
             exit 1
           fi
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install offline media test tools
+        timeout-minutes: 5
+        run: |
+          # Hosted runners can select an extremely slow Azure HTTP mirror.
+          for mirror in /etc/apt/apt-mirrors*.txt; do
+            if [ -f "$mirror" ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$mirror"
+            fi
+          done
+          apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install -y --no-install-recommends ffmpeg
+          ffmpeg -version
+          ffprobe -version
       - run: pnpm install --frozen-lockfile
       - run: pnpm publisher:check
       - run: pnpm typecheck
