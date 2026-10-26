@@ -32,6 +32,8 @@ export type FileConfig = {
   tencentNativeEventCollect?: 'off' | 'fixture' | 'file'
   /** Crunchyroll：调用方自持的 refresh_token（网关不落盘；play/manifest/license 逐次携带）。 */
   crunchyrollToken?: string
+  /** Crunchyroll 网页会话 cookie（etp_rt）。填了优先于 refresh_token：网关走网页客户端换 token。 */
+  crunchyrollSession?: string
   /** Hami Web and TV are separate gateway sessions. */
   hamiClient?: 'tv' | 'web'
   tencentTVDevice?: string

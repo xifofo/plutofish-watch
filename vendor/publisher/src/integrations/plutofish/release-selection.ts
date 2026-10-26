@@ -8,10 +8,13 @@ type ReleaseReader = { request<T>(binding: PublicationDraft['binding'], path: 'r
 export type ReleaseOption = {
   id: string; name: string; resolution: string; dynamicRange: string
   status: 'draft' | 'published' | 'unpublished'; latestEpisode?: number
+  /** 已就绪正片的集号（新版服务端返回）；订阅据此同步追更进度 */
+  episodes?: number[]
 }
 export type ReleaseChoices = {
   context: string; name: string; items: ReleaseOption[]; matchedId?: string
-  match?: 'binding' | 'specs'; needsChoice: boolean
+  /** remembered：绑定和规格都没对上，沿用订阅上次用过的版本（例如换了 115 源账号后发布标识变了） */
+  match?: 'binding' | 'specs' | 'remembered'; needsChoice: boolean
 }
 export type ReleaseSelection = { context: string } & ({ mode: 'existing'; releaseId: string } | { mode: 'new' })
 type ReleasePage = { items: ReleaseOption[]; total: number; page: number; pageSize: number; boundReleaseId?: string }
@@ -36,7 +39,8 @@ export async function releaseChoices(connection: ReleaseReader, drafts: Publicat
     if (!result || !Array.isArray(result.items) || !Number.isSafeInteger(result.total) || result.total < 0
       || result.page !== page || result.pageSize !== 100 || result.items.length > 100
       || result.items.some(r => !r || !/^[a-f0-9]{32}$/.test(r.id) || typeof r.name !== 'string' || typeof r.dynamicRange !== 'string'
-        || typeof r.resolution !== 'string' || !['draft', 'published', 'unpublished'].includes(r.status))) throw new Error('PlutoFish 版本列表响应无效，请重试')
+        || typeof r.resolution !== 'string' || !['draft', 'published', 'unpublished'].includes(r.status)
+        || (r.episodes !== undefined && (!Array.isArray(r.episodes) || r.episodes.length > 100000 || r.episodes.some(n => !Number.isSafeInteger(n) || n < 0))))) throw new Error('PlutoFish 版本列表响应无效，请重试')
     items.push(...result.items)
     boundId = result.boundReleaseId
     if (new Set(items.map(r => r.id)).size !== items.length) throw new Error('PlutoFish 版本列表已变化，请重试')
@@ -46,6 +50,12 @@ export async function releaseChoices(connection: ReleaseReader, drafts: Publicat
   const matched = matchRelease(items, name, boundId)
   const context = createHash('sha256').update(JSON.stringify([draft.releaseKey, name, drafts.map(d => d.episodeNumber)])).digest('hex')
   return { context, name, items, ...matched, needsChoice: !matched.matchedId && draft.seasonNumber !== undefined && !drafts.some(d => d.episodeNumber === 1) }
+}
+
+/** 绑定和规格都没匹配上时，沿用订阅记住的版本；该版本已下架或不在候选里则不沿用，仍按原规则要求选择。 */
+export function preferRelease(choices: ReleaseChoices, releaseId?: string): ReleaseChoices {
+  if (choices.matchedId || !releaseId || !choices.items.some(r => r.id === releaseId && r.status !== 'unpublished')) return choices
+  return { ...choices, matchedId: releaseId, match: 'remembered', needsChoice: false }
 }
 
 /** 未匹配的续集必须明确选择；强制新建的随机标识由主进程按批次生成并保存。 */
