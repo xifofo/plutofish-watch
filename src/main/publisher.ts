@@ -1,5 +1,6 @@
 /** 复用现有发布协议、分片和保留引擎；本地文件默认保留，显式开启后才定期清理。 */
 import { PublisherError, retryableError, retryDelay } from '../../vendor/publisher/src/integrations/plutofish/retry'
+import { publicationFailure } from '../../vendor/publisher/src/integrations/plutofish/publication-error'
 import { basename, extname, join, resolve } from 'node:path'
 import { realpathSync } from 'node:fs'
 import type { PublicationState } from '../../vendor/publisher/src/integrations/plutofish/publication-state'
@@ -92,6 +93,7 @@ export class WatchPublisher {
     job.ed2kSaved = draft.retention?.ed2kSaved ?? false
     job.retention = draft.retention ? structuredClone(draft.retention) : undefined
     job.error = job.preparationError || progress.error || (progress.stage === 'completed' && !progress.synced ? '上传完成，等待任务状态同步' : '')
+    if (!job.preparationError) job.errorDetails = progress.errorDetails
     if (!job.preparationError && progress.stage === 'failed' && job.status === 'failed') {
       if (progress.failure?.retryable) this.scheduleRetry(job, progress.failure.retryAfterMs, progress.failure.id)
       else delete job.retry
@@ -122,7 +124,6 @@ export class WatchPublisher {
     // 保留失败身份及次数，后续进度同步不能重新开启耗尽的自动重试。
     if (attempt > 8) {
       job.retry = { attempt, failureId }
-      job.error = '自动重试已达上限，请检查失败原因后手动重试'
       return
     }
     job.retry = { attempt, failureId, nextAt: this.now() + Math.max(retryDelay(attempt, this.retryOptions.baseMs, this.retryOptions.maxMs), retryAfterMs) }
@@ -155,6 +156,7 @@ export class WatchPublisher {
 
   private async prepare(root: WatchRoot, job: WatchJob, signal: AbortSignal): Promise<void> {
     delete job.preparationError
+    delete job.errorDetails
     job.status = 'preparing'; job.error = ''; this.store.save(); this.changed()
     try {
       this.connection.assertBinding(root.binding)
@@ -262,7 +264,9 @@ export class WatchPublisher {
         job.status = 'failed'
         if (retryableError(error)) this.scheduleRetry(job, error instanceof PublisherError ? error.retryAfterMs : undefined)
         else delete job.retry
-        job.error = error instanceof Error && /[\u4e00-\u9fff]/.test(error.message) ? error.message : '本地文件处理失败，请检查目录权限后重试'
+        const failure = publicationFailure(error, '检测与校验')
+        job.error = error instanceof Error && /[\u4e00-\u9fff]/.test(error.message) ? error.message : failure.message
+        job.errorDetails = failure.diagnostic
         if (job.fileKey) job.preparationError = job.error
       }
     } finally {

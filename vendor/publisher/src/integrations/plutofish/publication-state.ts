@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { PublicationDraft } from './publication-types.ts'
 import type { UploadCheckpoint } from './upload-types.ts'
+import type { FailureDetails } from './retry'
 
 export type TaskSnapshot = {
   taskKey: string; releaseKey: string; sourceAccount: string; workTarget: PublicationDraft['workTarget']; title: string
@@ -15,7 +16,7 @@ export type PublicationState = {
   draft: PublicationDraft; snapshot: TaskSnapshot; acknowledged: number; checkpoint?: UploadCheckpoint
   /** 首次发布成功的时间不随重试、校验、重启刷新；旧清单首次升级时起算。 */
   completedAt?: number
-  failure?: { retryable: boolean; retryAfterMs?: number }
+  failure?: { retryable: boolean; retryAfterMs?: number; diagnostic?: FailureDetails }
   retention?: {
     ed2k?: string; sha1?: string; acknowledged?: boolean; retiring?: boolean
     deletedAt?: number

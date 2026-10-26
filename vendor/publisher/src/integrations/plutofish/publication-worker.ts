@@ -1,5 +1,6 @@
 /** 持久化任务快照 Outbox；两路上传与单路预处理独立运行，退出不丢分片。 */
-import { PublisherError, retryableError } from './retry'
+import { PublisherError, type FailureDetails } from './retry'
+import { publicationFailure } from './publication-error'
 import { UploadPauses, UploadRateLimitError, uploadRateLimited } from './upload-pause'
 import { basename } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -19,7 +20,7 @@ import { PublicationRetention, type RetentionOptions } from './publication-reten
 import { localFileInUse } from '../../lib/local-file-use.ts'
 
 const eligible = (draft: PublicationDraft) => !publicationMissing(draft).length
-const safeError = (error: unknown) => error instanceof Error && /^(PlutoFish|当前发布端|成品|文件超过|115 [\u4e00-\u9fff]|发布|另一发布器)/.test(error.message) ? error.message : '上传中断，保留断点；可重试继续'
+const safeError = (error: unknown) => publicationFailure(error, '发布任务').message
 
 /** 本地监控没有分集标题时使用集号；不覆盖下载器提供的正式标题。 */
 function episodeTitle(draft: PublicationDraft): string | undefined {
@@ -47,7 +48,7 @@ export class PublicationWorker {
   private closed = false
   private readonly syncAbort = new AbortController()
   private readonly retryAt = new Map<string, number>()
-  private readonly syncErrors = new Map<string, string>()
+  private readonly syncErrors = new Map<string, PublisherError>()
 
   constructor(private readonly connection: PlutoFishConnection, private readonly changed: (draft: PublicationDraft, transient?: boolean) => void,
     options: { directory?: string; factory?: OSSFactory; manual?: boolean; beforeCleanup?: () => void; now?: () => number; retention?: RetentionOptions } = {}) {
@@ -118,12 +119,15 @@ export class PublicationWorker {
 
   private publish(state: PublicationState, error = '', transient = false): void {
     const p = state.snapshot
+    const syncError = this.syncErrors.get(state.draft.fileKey)
+    const message = error || p.errorMessage || syncError?.message || ''
     if (state.retention?.ed2k) state.draft.ed2k = { state: 'done', pct: 1, link: state.retention.ed2k }
     else if (state.draft.output && ['processing', 'uploading', 'completed'].includes(p.stage)) {
       state.draft.ed2k ??= { state: 'queued', pct: 0, link: '' }
     }
     state.draft.progress = { stage: p.stage, phase: state.draft.progress?.phase, downloadPercent: p.downloadPercent, uploadPercent: p.uploadPercent,
-      uploadedBytes: p.uploadedBytes, sizeBytes: p.sizeBytes, error: error || p.errorMessage || this.syncErrors.get(state.draft.fileKey) || '', synced: state.acknowledged >= p.sequence,
+      uploadedBytes: p.uploadedBytes, sizeBytes: p.sizeBytes, error: message, synced: state.acknowledged >= p.sequence,
+      errorDetails: !error && p.stage === 'failed' && p.errorMessage ? state.failure?.diagnostic : message === syncError?.message ? syncError?.diagnostic : undefined,
       failure: p.stage === 'failed' && state.failure ? { ...state.failure, id: `${p.attempt}:${p.sequence}` } : undefined }
     const view = structuredClone(state.draft)
     // 发送中的字节未获 OSS 确认，仅通过内存视图推送；快照序号和断点仍按整片回执落盘。
@@ -190,18 +194,18 @@ export class PublicationWorker {
   uploadPaused(binding: PublicationDraft['binding']): boolean { this.load(); return this.uploadPauses.paused(binding) }
   resumeAccount(binding: PublicationDraft['binding']): void { this.load(); this.uploadPauses.resume(binding) }
 
-  private pauseAccount(binding: PublicationDraft['binding']): void {
+  private pauseAccount(binding: PublicationDraft['binding'], diagnostic?: FailureDetails): void {
     try { this.uploadPauses.block(binding) }
     finally {
       // 即使暂停记录无法落盘，也先中止同账号已经在途的另一路上传。
       for (const state of this.states.values()) {
-        if (this.uploadPauses.paused(state.draft.binding)) this.running.get(state.draft.fileKey)?.abort.abort(new UploadRateLimitError())
+        if (this.uploadPauses.paused(state.draft.binding)) this.running.get(state.draft.fileKey)?.abort.abort(Object.assign(new UploadRateLimitError(), { diagnostic }))
       }
     }
     for (const state of this.states.values()) {
       if (!this.uploadPauses.paused(state.draft.binding) || ['completed', 'cancelled'].includes(state.snapshot.stage)) continue
       if (state.draft.output) {
-        state.failure = { retryable: false }
+        state.failure = { retryable: false, diagnostic }
         this.update(state, { stage: 'failed', errorMessage: new UploadRateLimitError().message })
       }
     }
@@ -229,8 +233,9 @@ export class PublicationWorker {
         } catch (error) {
           this.retryAt.set(state.draft.fileKey, Date.now() + 15_000)
           // ED2K 等后台进度刷新不能清掉仍未成功同步的错误。
-          this.syncErrors.set(state.draft.fileKey, safeError(error))
-          this.publish(state, safeError(error))
+          this.syncErrors.set(state.draft.fileKey, publicationFailure(error, '同步任务状态'))
+          // 失败上报的临时故障不能覆盖原上传失败原因；待同步标志单独保留。
+          this.publish(state)
         }
       }
       try { this.retention.tick(this.states, this.syncAbort.signal) } catch { /* 无法读取策略或保存状态时不删除成品 */ }
@@ -257,8 +262,9 @@ export class PublicationWorker {
               if (!abort.signal.aborted && !this.closed) { this.prepared.add(key); this.phase(state, undefined) }
             }).catch(error => {
               if (!abort.signal.aborted) {
-                state.failure = { retryable: retryableError(error) }
-                this.update(state, { stage: 'failed', errorMessage: safeError(error) })
+                const failure = publicationFailure(error, '读取本地文件')
+                state.failure = { retryable: failure.retryable, diagnostic: failure.diagnostic }
+                this.update(state, { stage: 'failed', errorMessage: failure.message })
               }
             }).finally(() => { this.preparing = undefined })
             this.preparing = { key, abort, promise }
@@ -362,14 +368,15 @@ export class PublicationWorker {
       this.update(state, { stage: 'completed', uploadedBytes: file.size, uploadPercent: 100, errorMessage: '' })
     } catch (error) {
       if (uploadRateLimited(error) || uploadRateLimited(signal.reason)) {
-        this.pauseAccount(draft.binding)
+        this.pauseAccount(draft.binding, publicationFailure(uploadRateLimited(error) ? error : signal.reason, '上传文件').diagnostic)
       } else if (!signal.aborted && error instanceof Error && error.message === 'PlutoFish 网盘上传排队中') {
         this.retryAt.set(draft.fileKey, Date.now() + 15_000)
         this.update(state, { stage: 'processing', errorMessage: error.message })
       } else if (!signal.aborted || heartbeatError) {
-        const failure = heartbeatError ?? error
-        state.failure = { retryable: retryableError(failure), retryAfterMs: failure instanceof PublisherError ? failure.retryAfterMs : undefined }
-        this.update(state, { stage: 'failed', errorMessage: safeError(failure) })
+        const stage = ({ hashing: '校验本地文件', uploading: '上传文件', verifying: '核验网盘文件', reporting: '登记资源' } as Record<string, string>)[state.draft.progress?.phase ?? ''] ?? '上传文件'
+        const failure = publicationFailure(heartbeatError ?? error, stage)
+        state.failure = { retryable: failure.retryable, retryAfterMs: failure.retryAfterMs, diagnostic: failure.diagnostic }
+        this.update(state, { stage: 'failed', errorMessage: failure.message })
       }
     } finally {
       if (heartbeat) clearInterval(heartbeat)

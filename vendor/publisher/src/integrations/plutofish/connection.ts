@@ -1,5 +1,6 @@
 /** 强制连接状态机：每次启动重验，过期请求不能放行，运行中定时重验。 */
 import { PublisherError, retryableError, retryableHTTP, retryAfter, retryDelay, transportError } from './retry'
+import { failureDetails, httpFailureDetails } from './publication-error'
 import { UploadRateLimitError } from './upload-pause'
 import { loadPlutoFishConfig, savePlutoFishConfig } from './config.ts'
 import { normalizePlutoFishURL, verifyPublisher } from './client.ts'
@@ -104,9 +105,13 @@ export class PlutoFishConnection {
   async request<T>(binding: PublicationDraft['binding'], path: 'tmdb/recognize' | 'tmdb/search' | 'releases/query' | 'tasks/report' | 'uploads/prepare' | 'files/check' | 'files/report' | 'files/ed2k' | 'directories' | 'directories/create' | 'range-proofs/pending' | 'range-proofs/report' | 'range-proofs/forget', body: unknown, signal?: AbortSignal): Promise<T> {
     this.assertBinding(binding)
     const key = this.saved.key
+    const uploadActions: Record<string, string> = { start: '申请上传', credentials: '获取上传凭据', verify: '核验网盘文件', heartbeat: '续期上传租约', release: '释放上传名额' }
+    const stage = path === 'uploads/prepare' ? uploadActions[String((body as { action?: unknown })?.action)] ?? '上传调度'
+      : ({ 'tasks/report': '同步任务状态', 'files/report': '登记资源', 'files/check': '检查重复文件', 'files/ed2k': '同步 ED2K' } as Record<string, string>)[path] ?? path
     const requestSignal = AbortSignal.any([this.requestAbort.signal, ...(signal ? [signal] : [])])
     const failed = (error: unknown) => {
       const failure = transportError(error, requestSignal)
+      failure.diagnostic = failureDetails(error, stage)
       if (key === this.saved.key && binding.url === this.saved.url && !this.closed && failure.retryable) this.disconnected(failure)
       return failure
     }
@@ -124,6 +129,7 @@ export class PlutoFishConnection {
     if (key !== this.saved.key) throw new Error('发布端密钥已变化，请重试')
     if (!response.ok) {
       const failure = await response.json().catch(() => null) as { error?: { code?: string; fieldErrors?: Record<string, unknown> } } | null
+      const diagnostic = httpFailureDetails(stage, response, failure?.error?.code)
       requestSignal.throwIfAborted()
       if (response.status === 422 && path !== 'tmdb/search' && path !== 'tmdb/recognize') {
         // 只展示固定字段名和业务提示，绝不把服务端正文、字段值或供应商凭据带入界面。
@@ -143,7 +149,7 @@ export class PlutoFishConnection {
         }
         const reason = reasons[failure?.error?.code ?? ''] || (names ? `${names}校验未通过` : '提交的数据未通过校验，请检查目录绑定与任务信息')
         const action = path === 'tasks/report' ? '任务上报' : path === 'files/report' ? '资源登记' : path === 'uploads/prepare' ? '上传调度' : path === 'releases/query' ? '版本查询' : '请求'
-        throw new PublisherError(`PlutoFish ${action}失败：${reason}（HTTP 422）`)
+        throw new PublisherError(`PlutoFish ${action}失败：${reason}（HTTP 422）`, false, undefined, diagnostic)
       }
       if (path === 'tmdb/recognize' && response.status !== 401 && response.status !== 403) {
         const messages: Record<string, string> = {
@@ -161,7 +167,7 @@ export class PlutoFishConnection {
         throw new Error('作品搜索失败，请稍后重试')
       }
       if (path === 'uploads/prepare') {
-        if (failure?.error?.code === 'CLOUD_ACCESS_LIMIT') throw new UploadRateLimitError()
+        if (failure?.error?.code === 'CLOUD_ACCESS_LIMIT') throw Object.assign(new UploadRateLimitError(), { diagnostic })
         // 使用本地固定提示，不把供应商正文或凭据送到渲染进程。
         const messages: Record<string, string> = {
           CLOUD_ACCESS_LIMIT: '115 已限制访问，自动上传已停止，请稍后手动继续',
@@ -179,11 +185,11 @@ export class PlutoFishConnection {
           PUBLISHER_UPLOAD_ACCOUNT_CHANGED: '当前发布端绑定的网盘已变化，请恢复原账号后重试',
         }
         const message = messages[failure?.error?.code ?? '']
-        if (message && response.status !== 401 && response.status !== 403) throw new PublisherError(message, ['CLOUD_UPLOAD_UNCERTAIN', 'CLOUD_UPLOAD_NOT_READY'].includes(failure?.error?.code ?? ''), retryAfter(response))
-        if (failure?.error?.code?.startsWith('CLOUD_') && response.status !== 401 && response.status !== 403) throw new PublisherError('115 操作已停止，请在 PlutoFish 查看失败原因后手动继续', false)
+        if (message && response.status !== 401 && response.status !== 403) throw new PublisherError(message, ['CLOUD_UPLOAD_UNCERTAIN', 'CLOUD_UPLOAD_NOT_READY'].includes(failure?.error?.code ?? ''), retryAfter(response), diagnostic)
+        if (failure?.error?.code?.startsWith('CLOUD_') && response.status !== 401 && response.status !== 403) throw new PublisherError('115 操作已停止，请在 PlutoFish 查看失败原因后手动继续', false, undefined, diagnostic)
       }
       if (response.status === 409) {
-        if (failure?.error?.code === 'PUBLISHER_UPLOAD_BUSY') throw new PublisherError('PlutoFish 网盘上传排队中', true, retryAfter(response))
+        if (failure?.error?.code === 'PUBLISHER_UPLOAD_BUSY') throw new PublisherError('PlutoFish 网盘上传排队中', true, retryAfter(response), diagnostic)
         if (path.startsWith('directories')) {
           const messages: Record<string, string> = {
             CLOUD_ACCOUNT_UNAVAILABLE: '绑定的源网盘暂不可用，请在 PlutoFish 后台检查账号状态',
@@ -208,7 +214,7 @@ export class PlutoFishConnection {
         this.options.changed?.()
       }
       // 不拼接供应商正文，避免临时凭据、下载地址进入 UI 和运行日志。
-      throw new PublisherError(`PlutoFish ${path === 'tmdb/search' ? '作品搜索' : path === 'releases/query' ? '版本查询' : path === 'directories/create' ? '目录创建（已创建的目录会在重试时复用）' : path === 'directories' ? '目录读取' : '上报或上传调度'}失败（HTTP ${response.status}）`, retryableHTTP(response.status), retryAfter(response))
+      throw new PublisherError(`PlutoFish ${path === 'tmdb/search' ? '作品搜索' : path === 'releases/query' ? '版本查询' : path === 'directories/create' ? '目录创建（已创建的目录会在重试时复用）' : path === 'directories' ? '目录读取' : '上报或上传调度'}失败（HTTP ${response.status}）`, retryableHTTP(response.status), retryAfter(response), diagnostic)
     }
     let result: T
     try { result = await response.json() as T }

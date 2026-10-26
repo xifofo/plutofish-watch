@@ -1,5 +1,6 @@
 /** 单任务串行分片：V2 使用完整主机，旧版 OSS 区域地址由 SDK 拼 bucket；每片落盘后才确认字节。 */
 import { PublisherError } from './retry'
+import { failureDetails, ossFailure } from './publication-error'
 import OSS from 'ali-oss'
 import { Agent } from 'node:https'
 import { createHash } from 'node:crypto'
@@ -97,7 +98,8 @@ export async function uploadParts(options: {
     return session!.client
   }
   const initialize = async () => {
-    const result = await (await client()).initMultipartUpload(dispatch.object!)
+    const sdk = await client()
+    const result = await sdk.initMultipartUpload(dispatch.object!).catch(error => { throw ossFailure(error, '创建上传会话') })
     if (!result.uploadId) throw new Error('115 未返回分片上传标识')
     cp.uploadId = result.uploadId
     cp.sequential = true; cp.completing = false
@@ -117,11 +119,13 @@ export async function uploadParts(options: {
         page = await (await client()).listParts(dispatch.object, cp.uploadId!, { 'max-parts': 1000, 'part-number-marker': marker, 'encoding-type': 'url' })
       } catch (error) {
         if (cp.sequential && cp.completing && (error as { code?: string })?.code === 'NoSuchUpload') {
-          throw new PublisherError('115 合并结果仍待核验，请等待原任务恢复', true)
+          throw new PublisherError('115 合并结果仍待核验，请重试原任务核验', true, undefined, failureDetails(error, '核对合并结果'))
         }
-        // 只迁移旧版未启用 sequential 且已经合并失效的断点；服务端须先明确确认原文件不存在。
-        // 保留原 pick_code/object，仅重建 OSS 分片会话，不能把普通网络错误当成新上传许可。
-        if (marker !== 0 || !options.recoverLegacyUpload || cp.sequential || !cp.completing || (error as { code?: string })?.code !== 'NoSuchUpload') throw error
+        // 从未提交合并且 OSS 明确声明会话不存在，可以在原目标内重建分片会话。
+        // 已提交合并只允许原有旧版迁移；普通断网、403 和结果不明均保留断点。
+        signal.throwIfAborted()
+        const legacy = marker === 0 && options.recoverLegacyUpload && !cp.sequential && cp.completing
+        if ((cp.completing && !legacy) || (error as { code?: string })?.code !== 'NoSuchUpload') throw ossFailure(error, '核对续传分片')
         cp.previousUploadId = cp.uploadId
         cp.uploadId = undefined; cp.parts = []; cp.completing = false
         save(); progress(0)
@@ -170,6 +174,7 @@ export async function uploadParts(options: {
       if (token!.rate > 0) headers['x-oss-traffic-limit'] = String(Math.max(102400, token!.rate) * 8)
       const partOptions: OSS.RequestOptions & { headers: Record<string, string> } = { headers }
       const result = await sdk.uploadPart(dispatch.object, cp.uploadId!, number, data, 0, data.length, partOptions)
+        .catch(error => { throw ossFailure(error, `上传第 ${number} 片`, number) })
       // 本地 MD5 与远端 ETag 对齐，避免错误断点或文件被更换后拼接混合内容。
       if (etag(result.etag) !== md5.toString('hex').toUpperCase()) throw new Error('115 分片校验失败')
       cp.parts.push({ number, etag: result.etag, size: data.length })
@@ -177,12 +182,16 @@ export async function uploadParts(options: {
     }
     signal.throwIfAborted()
     await fileRange(path, 0, 0, cp.file, signal)
+    // 补传中间缺片会把新回执追加到末尾；合并必须恢复严格递增顺序。
+    cp.parts.sort((a, b) => a.number - b.number)
     cp.completing = true; save()
     const headers: Record<string, string> = { 'x-oss-callback': Buffer.from(dispatch.callback).toString('base64') }
     if (dispatch.callbackVar) headers['x-oss-callback-var'] = Buffer.from(dispatch.callbackVar).toString('base64')
-    const result = await (await client()).completeMultipartUpload(dispatch.object, cp.uploadId!, cp.parts, { headers })
+    const sdk = await client()
+    const result = await sdk.completeMultipartUpload(dispatch.object, cp.uploadId!, cp.parts, { headers })
+      .catch(error => { throw ossFailure(error, '合并上传分片') })
     const reply = (result as OSS.CompleteMultipartUploadResult & { data?: { state?: unknown } }).data
-    if (reply?.state !== true && reply?.state !== 1) throw new PublisherError('115 合并回调未确认成功，请重试原任务核验', true)
+    if (reply?.state !== true && reply?.state !== 1) throw new PublisherError('115 合并回调未确认成功，请重试原任务核验', true, undefined, { stage: '核对合并回调', code: 'CALLBACK_UNCONFIRMED' })
   } finally {
     if (meterTimer) clearInterval(meterTimer)
     prefetchAbort.abort()

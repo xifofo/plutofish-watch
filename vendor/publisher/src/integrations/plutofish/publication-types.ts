@@ -42,7 +42,7 @@ export type PublicationDraft = {
   directoryId?: string
   /** 选择时的展示路径；上传始终使用固定目录 ID。 */
   directoryPath?: string
-  progress?: { stage: string; phase?: 'hashing' | 'uploading' | 'verifying' | 'reporting'; downloadPercent: number; uploadPercent: number; uploadedBytes: number; sizeBytes?: number; error: string; synced: boolean; transfer?: UploadTransfer; failure?: { id: string; retryable: boolean; retryAfterMs?: number } }
+  progress?: { stage: string; phase?: 'hashing' | 'uploading' | 'verifying' | 'reporting'; downloadPercent: number; uploadPercent: number; uploadedBytes: number; sizeBytes?: number; error: string; errorDetails?: import('./retry').FailureDetails; synced: boolean; transfer?: UploadTransfer; failure?: { id: string; retryable: boolean; retryAfterMs?: number } }
   ed2k?: ED2KProgress
   retention?: RetentionProgress
   categoryLabel: string

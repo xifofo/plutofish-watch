@@ -407,6 +407,57 @@ test('分片断网后自动续传原 uploadId，已确认第一片不重传，ED
   expect(f.calls.filter(c => c.path === 'files/report')).toHaveLength(1)
 })
 
+test('上传 502 详情落盘，重启后自动重建失效会话并沿用原文件和版本完成', async () => {
+  let now = 100000, init = 0, unavailable = true, merged = 0
+  const options: NonNullable<Parameters<typeof setup>[0]>['retry'] = { now: () => now, baseMs: 100, factory: () => ({ close() {}, client: {
+    async initMultipartUpload() { return { uploadId: `UPLOAD-${++init}` } as any },
+    async listParts(_name, id) {
+      expect(id).toBe('UPLOAD-1')
+      throw Object.assign(new Error('expired secret'), { code: 'NoSuchUpload', status: 404 })
+    },
+    async uploadPart(_name, id, _number, buffer) {
+      if (unavailable) throw Object.assign(new Error('SECRET https://private.invalid/?token=SECRET'), { code: 'ServiceUnavailable', status: 502, requestId: 'ABCDEF0123456789' })
+      expect(id).toBe('UPLOAD-2')
+      return { etag: createHash('md5').update(buffer).digest('hex') } as any
+    },
+    async completeMultipartUpload() { merged++; return { data: { state: true } } as any },
+  } }) }
+  const f = await setup({ retry: options, reply: (path, body) => {
+    if (path === 'tasks/report' && body.stage === 'failed') return { status: 503 }
+    if (path !== 'uploads/prepare') return undefined
+    if (body.action === 'start') return { body: { dispatch: { status: 'uploading', bucket: 'bucket', object: 'original', pickCode: 'original', callback: '{}' } } }
+    if (body.action === 'credentials') return { body: { credentials: { accessKeyId: 'fake', accessKeySecret: 'fake', securityToken: 'fake', expiration: new Date(Date.now() + 3600000).toISOString(), rate: 0 } } }
+    return undefined
+  } })
+  await until(f.publisher, () => f.job.status === 'failed')
+  const key = f.job.fileKey, release = structuredClone(f.job.release), signature = structuredClone(f.job.signature)
+  const diagnostic = { stage: '上传第 1 片', partNumber: 1, code: 'ServiceUnavailable', httpStatus: 502, requestId: 'ABCDEF0123456789' }
+  expect(f.job.error).toBe('上传第 1 片失败：存储服务暂不可用')
+  expect(f.job.errorDetails).toEqual(diagnostic)
+  await f.publisher.tick()
+  expect(f.calls.some(c => c.path === 'tasks/report' && c.body.stage === 'failed')).toBe(true)
+  expect(f.job.synced).toBe(false)
+  expect(f.job.error).toBe('上传第 1 片失败：存储服务暂不可用')
+  expect(f.job.errorDetails).toEqual(diagnostic)
+  await f.publisher.close()
+  const store = new WatchStore(f.store.path), job = store.data.jobs[0]
+  expect(job.errorDetails).toEqual(diagnostic)
+  const saved = await readFile(join(f.temp, 'publications', key!.replace(':', '-') + '.state.json'), 'utf8')
+  expect(JSON.parse(saved).failure.diagnostic).toEqual(diagnostic)
+  expect(saved).not.toContain('SECRET')
+  const publisher = new WatchPublisher(store, f.connection, f.temp, () => {}, e => { throw e }, options)
+  disposers.push(() => publisher.close()); f.connection.validateFile = validateWatchedFile(store)
+  publisher.start(); unavailable = false; now = job.retry!.nextAt!
+  await until(publisher, () => job.status === 'completed' && job.synced === true && job.ed2kSaved === true)
+  expect(job.fileKey).toBe(key); expect(job.release).toEqual(release)
+  expect(await safeFile(f.root.path, f.file)).toEqual(signature)
+  expect(store.data.jobs).toHaveLength(1)
+  expect(job.errorDetails).toBeUndefined(); expect(job.error).toBe('')
+  expect(init).toBe(2); expect(merged).toBe(1)
+  expect(f.calls.filter(c => c.path === 'files/report')).toHaveLength(1)
+  expect(f.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'start').every(c => c.body.taskKey === key && c.body.directoryId === '42')).toBe(true)
+})
+
 test('真实检测本地视频，通过模拟服务完成核验与资源登记，保留本地原文件', async () => {
   const f = await setup()
   const measured = await probeFile(findProbe(''), f.file, f.job.signature.size, new AbortController().signal)
@@ -828,6 +879,8 @@ test('可恢复失败最多自动重试八次，耗尽后仍保留失败状态',
     now += 10
   }
   expect(f.job.retry?.nextAt).toBeUndefined()
+  expect(f.job.error).toContain('HTTP 503')
+  expect(f.job.errorDetails).toMatchObject({ stage: '检查重复文件', httpStatus: 503 })
   const calls = f.calls.length
   now += 3600000
   for (let i = 0; i < 5; i++) await f.publisher.tick()

@@ -55,6 +55,8 @@ export type WatchJob = {
   watchSnapshot?: WatchRoot
   status: JobStatus; createdAt: string; updatedAt: string; episodeNumber?: number
   fileKey?: string; sha1?: string; percent: number; phase?: string; error: string
+  /** 已脱敏的失败阶段与服务错误标识，不包含请求正文、凭据或上传地址。 */
+  errorDetails?: import('../../vendor/publisher/src/integrations/plutofish/retry').FailureDetails
   uploadedBytes?: number; transfer?: UploadTransfer
   /** 跨目录和重命名的内容归属；不使用本地路径或监控目录 ID。 */
   targetKey?: string; duplicateOf?: string; reused?: boolean
