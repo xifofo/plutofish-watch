@@ -33,6 +33,11 @@ export function validateInput(input: WatchInput, view: Connection): WatchInput {
   const paths = validateWatchPaths(input)
   if (input.mode !== undefined && !['watch', 'once'].includes(input.mode)) throw new Error('目录任务类型无效')
   if (input.mode === 'once' && paths.length !== 1) throw new Error('一次性上传每次请选择一个目录')
+  if (input.selectedFiles !== undefined && (input.mode !== 'once' || !Array.isArray(input.selectedFiles)
+    || !input.selectedFiles.length || input.selectedFiles.length > 100_000
+    || input.selectedFiles.some(path => typeof path !== 'string' || !path.trim() || path.length > 4096 || path.includes('\0')))) {
+    throw new Error('请选择有效的一次性上传文件')
+  }
   const cleanup = input.mode === 'once' ? validateRetention(input.cleanup ?? defaultOneTimeRetention()) : undefined
   validateWork(input?.work, input?.seasonNumber)
   bindingFor(view, input.sourceAccountId)
@@ -49,7 +54,7 @@ export function validateInput(input: WatchInput, view: Connection): WatchInput {
     throw new Error('请完整填写目录绑定；稳定等待时间为 10–3600 秒')
   }
   return {
-    mode: input.mode, cleanup,
+    mode: input.mode, cleanup, selectedFiles: input.selectedFiles ? [...input.selectedFiles] : undefined,
     path: paths[0], additionalPaths: paths.slice(1), title: input.title.trim(), work: validateWork(input.work, input.seasonNumber),
     sourceAccountId: input.sourceAccountId, versionMode, sourcePreset: validateSource(input.sourcePreset), releaseId: versionMode === 'auto' ? '' : input.releaseId, directoryId: input.directoryId,
     directoryPath: input.directoryPath, includeExisting: input.mode === 'once' || input.includeExisting, stableSeconds: input.stableSeconds,

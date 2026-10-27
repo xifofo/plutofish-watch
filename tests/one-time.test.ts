@@ -14,16 +14,19 @@ const DAY = 24 * 3600_000
 const disposers: Array<() => Promise<unknown>> = []
 afterEach(async () => { for (const dispose of disposers.splice(0).reverse()) await dispose() })
 
-async function fixture(enabled = true) {
+async function fixture(enabled = true, selected = false) {
   const temp = await realpath(await mkdtemp(join(tmpdir(), 'watch-once-')))
   disposers.push(() => rm(temp, { recursive: true, force: true }))
   const directory = join(temp, 'media'), sub = join(directory, 'Season 1')
   await mkdir(sub, { recursive: true })
-  const file = join(sub, 'Show.S01E01.mkv'), sidecar = join(directory, '.metadata')
+  const file = join(sub, 'Show.S01E01.mkv'), sidecar = join(selected ? sub : directory, '.metadata')
   await writeFile(file, 'offline video'); await writeFile(sidecar, 'offline sidecar')
+  const selectedFiles = selected ? [file, join(sub, 'Show.S01E02.mkv')] : undefined
+  if (selectedFiles) await writeFile(selectedFiles[1], 'second video')
+  const path = selected ? sub : directory
   const cleanup = { enabled, days: 3 }
-  const root: WatchRoot = { mode: 'once', cleanup, batch: await createOneTimeBatch(directory, cleanup),
-    id: 'once', path: directory, title: 'Once', work: { mediaType: 'tv', tmdbId: '123', category: 'tv' }, seasonNumber: 1,
+  const root: WatchRoot = { mode: 'once', selectedFiles, cleanup, batch: await createOneTimeBatch(path, cleanup, selectedFiles),
+    id: 'once', path, title: 'Once', work: { mediaType: 'tv', tmdbId: '123', category: 'tv' }, seasonNumber: 1,
     sourceAccountId: 's', releaseId: 'a'.repeat(32), releaseName: '1080p', directoryId: '0', directoryPath: '/', includeExisting: true,
     stableSeconds: 10, enabled: true, initialized: false, createdAt: new Date().toISOString(),
     binding: { url: 'http://127.0.0.1:1', publisherId: 'p', sourceAccount: { id: 's', alias: 's' } } }
@@ -159,4 +162,69 @@ test('重复文件必须等原任务的上传与 ED2K 均同步，跨批次引�
   original.ed2kSaved = true; f.manager.tick(); expect(f.root.batch!.completedAt).toBeDefined()
   expect(job.ed2k).toEqual(original.ed2k); expect(job.ed2kSaved).toBe(true)
   f.advance(4 * DAY); f.manager.tick(); expect(existsSync(f.root.path)).toBe(false)
+})
+
+
+test('文件选择只入队所选视频，重启和新增同目录视频不扩大清单', async () => {
+  const f = await fixture(false, true)
+  await writeFile(join(f.root.path, 'Show.S01E03.mkv'), 'unselected')
+  await f.watcher.scan()
+  const restored = new WatchStore(f.store.path)
+  const watcher = new DirectoryWatcher(restored, () => {}, async () => {}, error => { throw error })
+  disposers.push(() => watcher.close()); await watcher.scan()
+  expect(restored.data.jobs.map(j => j.path)).toEqual(f.root.selectedFiles!)
+  expect(restored.data.watches[0].selectedFiles).toEqual(f.root.selectedFiles!)
+  f.complete(); f.manager.tick(); f.advance(30 * DAY); f.manager.tick()
+  expect(existsSync(f.file)).toBe(true)
+})
+
+test('所选文件清理等待读取租约，到期只删已选文件，保留目录、未选视频和附属文件', async () => {
+  const f = await fixture(true, true), sibling = join(f.root.path, 'Show.S01E03.mkv')
+  await writeFile(sibling, 'keep'); f.complete(); f.manager.tick(); f.advance(4 * DAY)
+  const release = useLocalFile(f.root.selectedFiles![1])
+  try { f.manager.tick(); expect(f.root.selectedFiles!.every(existsSync)).toBe(true) }
+  finally { release() }
+  f.advance(60_001); f.manager.tick()
+  expect(f.root.selectedFiles!.some(existsSync)).toBe(false)
+  for (const path of [f.root.path, f.sidecar, sibling]) expect(existsSync(path)).toBe(true)
+  expect(new WatchStore(f.store.path).data.watches[0].batch!.deletedAt).toBe(f.now())
+})
+
+for (const kind of ['changed', 'symlink', 'missing'] as const) test(`所选文件 ${kind} 时停止整批清理`, async () => {
+  const f = await fixture(true, true); f.complete(); f.manager.tick()
+  const second = f.root.selectedFiles![1]
+  if (kind === 'changed') await appendFile(second, 'changed')
+  else { await rm(second); if (kind === 'symlink') await symlink(f.sidecar, second) }
+  f.advance(4 * DAY); f.manager.tick()
+  expect(f.root.batch!.cleanupError).toBeTruthy(); expect(existsSync(f.file)).toBe(true)
+  expect(existsSync(f.sidecar)).toBe(true)
+})
+
+test('文件清理中断后恢复只删除剩余已选文件', async () => {
+  const f = await fixture(true, true); f.complete(); f.manager.tick(); f.advance(4 * DAY)
+  f.root.batch!.deletingAt = f.now(); f.store.save(); unlinkSync(f.file)
+  const restored = new WatchStore(f.store.path)
+  new OneTimeBatches(restored, () => {}, () => true, f.now).tick()
+  expect(restored.data.watches[0].batch!.deletedAt).toBe(f.now())
+  expect(existsSync(f.root.selectedFiles![1])).toBe(false); expect(existsSync(f.sidecar)).toBe(true)
+})
+
+test('拒绝空文件选择、非视频、临时文件、链接和跨目录；损坏清单不能扩大删除范围', async () => {
+  const f = await fixture(true, true), partial = join(f.root.path, 'Show.part.mkv'), empty = join(f.root.path, 'empty.mp4')
+  const linked = join(f.root.path, 'link.mkv')
+  await writeFile(partial, 'partial'); await writeFile(empty, ''); await symlink(f.file, linked)
+  for (const files of [[], [f.sidecar], [partial], [empty], [linked], [f.file, join(f.temp, 'outside.mp4')]]) {
+    await expect(createOneTimeBatch(f.root.path, f.root.cleanup!, files)).rejects.toThrow()
+  }
+  const original = structuredClone(f.root)
+  for (const mutate of [
+    () => { f.root.selectedFiles = [] },
+    () => { f.root.batch!.files.push(join(f.root.path, 'outside.mkv')) },
+    () => { f.root.batch!.entries![0].path = '.metadata' },
+    () => { f.root.batch!.entries![0].path = ''; f.root.batch!.entries![0].kind = 'directory' },
+    () => { delete f.root.selectedFiles },
+  ]) {
+    Object.assign(f.root, structuredClone(original)); mutate(); f.store.save()
+    expect(() => new WatchStore(f.store.path)).toThrow()
+  }
 })

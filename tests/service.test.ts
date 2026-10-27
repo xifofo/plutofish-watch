@@ -179,3 +179,30 @@ test('一次性任务通过服务创建，默认保留一天且不自动删除�
   expect(next.cleanup!.enabled).toBe(false); expect(next.batch!.deleteAt).toBeUndefined()
   await expect(service.add({ ...root, path: media, mode: 'once', cleanup: { enabled: true, days: 0 } })).rejects.toThrow('保留天数')
 })
+
+
+test('一次性文件任务允许同目录不同文件，拒绝重复、监控范围和整目录清理冲突', async () => {
+  const { service, root, job, temp } = await setup()
+  const path = join(temp, 'selected'); await mkdir(path)
+  const files = [1, 2, 3].map(n => join(path, `Show.S01E0${n}.mp4`))
+  for (const file of files) await writeFile(file, 'selected fixture')
+  await service.add({ ...root, mode: 'once', path, selectedFiles: files.slice(0, 2), cleanup: { enabled: true, days: 1 } })
+  const once = service.store.data.watches.at(-1)!
+  expect(once.batch!.files).toEqual(files.slice(0, 2))
+  expect(service.store.data.jobs.filter(j => j.watchId === once.id).map(j => j.path)).toEqual(files.slice(0, 2))
+  await service.add({ ...root, mode: 'once', path, selectedFiles: [files[2]] })
+  for (const input of [
+    { ...root, mode: 'once' as const, path, selectedFiles: [files[0]] },
+    { ...root, mode: 'once' as const, selectedFiles: [job.path] },
+    { ...root, mode: 'once' as const, path, cleanup: { enabled: true, days: 1 } },
+  ]) await expect(service.add(input)).rejects.toThrow('重叠')
+  await expect(service.add({ ...root, mode: 'once', path, selectedFiles: [job.path] })).rejects.toThrow('不属于')
+  await expect(service.add({ ...root, path, selectedFiles: [files[0]] })).rejects.toThrow('一次性上传文件')
+  // 旧目录批次固定清单之外的新文件可以另建任务。
+  await service.removeWatch(once.id)
+  await service.removeWatch(service.store.data.watches.at(-1)!.id)
+  await service.add({ ...root, mode: 'once', path })
+  const later = join(path, 'Show.S01E04.mp4'); await writeFile(later, 'later')
+  await service.add({ ...root, mode: 'once', path, selectedFiles: [later] })
+  expect(service.store.data.watches.at(-1)!.batch!.files).toEqual([later])
+})

@@ -71,3 +71,11 @@ test('歧义、禁用分类、身份错配和跨季结果不能伪造自动回�
   const review = valid(); review.canAutoFill = false; review.workTarget = null; review.status = 'review'; review.reasons = ['category_disabled']
   expect(validateRecognition(review).canAutoFill).toBe(false)
 })
+
+
+test('直接选择文件只使用该文件名识别，不采样同目录其他视频', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'watch-recognition-')); temporary.push(dir)
+  await writeFile(join(dir, 'Unrelated.S01E01.mp4'), 'other')
+  const selected = join(dir, 'Stars.S02E03.mkv'); await writeFile(selected, 'selected')
+  expect(await recognitionSample(selected)).toEqual({ directoryName: basename(dir), fileName: 'Stars.S02E03.mkv', truncated: false })
+})

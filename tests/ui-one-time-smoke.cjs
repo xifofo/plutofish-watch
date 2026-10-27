@@ -24,7 +24,11 @@ async function until(fn, label = '状态', timeout = 25000) {
   fs.mkdirSync(path.join(temp, 'app', 'Shared Dictionary', 'cache'), { recursive: true })
   app.setPath('userData', path.join(temp, 'app')); process.argv.push(`--watch-data=${path.join(temp, 'app')}`)
   let selected = media, chooseCount = 0
-  dialog.showOpenDialog = async () => { chooseCount++; return { canceled: false, filePaths: [selected] } }
+  const dialogOptions = []
+  dialog.showOpenDialog = async (_window, options) => {
+    chooseCount++; dialogOptions.push(options)
+    return { canceled: selected === null, filePaths: selected === null ? [] : Array.isArray(selected) ? selected : [selected] }
+  }
   server = http.createServer(async (req, res) => {
     try {
       let raw = ''; for await (const chunk of req) raw += chunk
@@ -73,7 +77,7 @@ async function until(fn, label = '状态', timeout = 25000) {
   await js('window.plutoWatch.setRetention({enabled:true,days:3})')
   await js('window.plutoWatch.pauseAll()')
   await until(() => js("document.querySelector('.sidebar-bottom strong')?.textContent === '一次性上传离线验收'"), '连接状态显示')
-  await click('一次性上传'); await click('选择目录上传')
+  await click('一次性上传'); await click('新建一次性上传')
   assert.equal(await js("!!document.querySelector('.once-cleanup')"), false)
   await click('选择目录'); await until(() => js("!!document.querySelector('.selected-work')"), '识别回填')
   assert.equal(chooseCount, 1)
@@ -110,7 +114,7 @@ async function until(fn, label = '状态', timeout = 25000) {
   nativeTheme.themeSource = 'light'; win.setSize(1240, 840); await screenshot('once-deleted-light')
 
   // 第二次走相同入口，确认可取消删除，并且后续新增文件不会自动加入。
-  selected = second; await click('选择目录上传'); await click('选择目录')
+  selected = second; await click('新建一次性上传'); await click('选择目录')
   await until(() => js("!!document.querySelector('.selected-work')"))
   await fill('select[aria-label="版本归类"]', 'fixed'); await click('查询版本')
   await until(() => js("!document.querySelector('input[aria-label=自动删除本次目录]').closest('fieldset:disabled')"), '表单就绪')
@@ -123,9 +127,48 @@ async function until(fn, label = '状态', timeout = 25000) {
   await js('window.plutoWatch.scan()')
   assert.equal((await snapshot()).jobs.length, 2)
   assert.equal(chooseCount, 2)
+  // 同一目录的另一批只选两个视频，验证原生文件入口、取消、移除和精确清理范围。
+  const selectedFiles = [2, 3, 4].map(n => path.join(second, `Stars.S01E0${n}.NF.WEB-DL.mp4`))
+  for (const file of selectedFiles) fs.copyFileSync(path.join(second, 'Stars.S01E01.NF.WEB-DL.mp4'), file)
+  selected = selectedFiles
+  await click('新建一次性上传'); await click('选择文件')
+  await until(() => js("!!document.querySelector('.selected-work')"), '所选文件识别')
+  assert.ok(dialogOptions.at(-1).properties.includes('multiSelections'))
+  assert.ok(dialogOptions.at(-1).properties.includes('openFile'))
+  assert.equal(await js("document.querySelector('#recognition-file').value"), path.basename(selectedFiles[0]))
+  assert.equal(await js("document.querySelectorAll('.selected-file').length"), 3)
+  selected = null; await click('选择文件')
+  assert.equal(await js("document.querySelectorAll('.selected-file').length"), 3)
+  await js("document.querySelectorAll('.selected-file button')[2].click()")
+  assert.equal(await js("document.querySelectorAll('.selected-file').length"), 2)
+  assert.equal(await js("document.querySelector('input[aria-label=自动删除所选文件]').checked"), false)
+  await fill('select[aria-label="版本归类"]', 'fixed'); await click('查询版本')
+  await fill('input[type=number][min="10"]', '10')
+  await until(() => js("!document.querySelector('input[aria-label=自动删除所选文件]').closest('fieldset:disabled')"), '文件表单就绪')
+  await js("document.querySelector('input[aria-label=自动删除所选文件]').click()")
+  assert.equal(await js("document.querySelector('input[aria-label=自动删除所选文件]').checked"), true)
+  await js("document.querySelector('.page-heading').scrollIntoView({block:'start'})")
+  nativeTheme.themeSource = 'light'; win.setSize(1240, 840); await screenshot('once-files-light')
+  nativeTheme.themeSource = 'dark'; win.setSize(840, 720); await screenshot('once-files-narrow-dark')
+  assert.equal(await js('document.documentElement.scrollWidth > innerWidth'), false)
+  await screenshot('once-files-form-narrow-dark')
+  await click('开始一次性上传'); await until(async () => (await snapshot()).watches.length === 3)
+  const fileBatch = (await snapshot()).watches[2]
+  assert.deepEqual(fileBatch.selectedFiles, selectedFiles.slice(0, 2))
+  assert.deepEqual(fileBatch.batch.files, selectedFiles.slice(0, 2))
+  offset += 31000; await js('window.plutoWatch.scan()')
+  await until(async () => (await snapshot()).watches[2].batch.completedAt !== undefined, '所选文件上传和 ED2K')
+  const fileDue = (await snapshot()).watches[2].batch.deleteAt
+  assert.ok(Number.isFinite(fileDue))
+  offset = fileDue + 60001 - originalNow()
+  await until(async () => (await snapshot()).watches[2].batch.deletedAt !== undefined, '仅清理所选文件')
+  assert.equal(fs.existsSync(selectedFiles[0]), false); assert.equal(fs.existsSync(selectedFiles[1]), false)
+  assert.equal(fs.existsSync(selectedFiles[2]), true); assert.equal(fs.existsSync(second), true)
+  assert.equal(fs.existsSync(path.join(second, 'Stars.S01E01.NF.WEB-DL.mp4')), true)
+  await screenshot('once-files-completed-narrow-dark')
   assert.deepEqual(errors, [])
   console.log(JSON.stringify({ ok: true, recognized: true, defaultOneDay: true, optionalDeletion: true, entireFolderDeleted: true,
-    pauseRespected: true, globalPolicyIsolated: true, cancelCleanup: true, fixedFileList: true, notifiedServer: true, lightAndNarrowDark: true }))
+    pauseRespected: true, globalPolicyIsolated: true, cancelCleanup: true, fixedFileList: true, selectedFilesOnly: true, multiSelect: true, cancelPicker: true, removeSelection: true, selectedFileCleanup: true, notifiedServer: true, lightAndNarrowDark: true }))
   Date.now = originalNow; app.quit()
 })().catch(async error => { failed = true; Date.now = originalNow; console.error(error); const win = BrowserWindow.getAllWindows()[0]; if (win) { console.error(await win.webContents.executeJavaScript('document.body.innerText')); fs.mkdirSync(path.resolve('.smoke'), { recursive: true }); fs.writeFileSync(path.resolve('.smoke/once-error.png'), (await win.webContents.capturePage()).toPNG()) }; app.quit() })
 app.on('will-quit', () => { server?.closeAllConnections(); server?.close(); if (temp) fs.rmSync(temp, { recursive: true, force: true }) })

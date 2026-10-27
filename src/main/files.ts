@@ -45,7 +45,25 @@ export async function safeFile(root: string, path: string): Promise<Signature> {
   return signature(file)
 }
 
-const extensions = new Set(['.mp4', '.mkv', '.m4v', '.mov', '.avi', '.ts', '.m2ts', '.webm'])
+export const videoExtensions = ['mp4', 'mkv', 'm4v', 'mov', 'avi', 'ts', 'm2ts', 'webm']
+export const isVideoFile = (path: string) => videoExtensions.includes(extname(path).slice(1).toLowerCase())
+  && !basename(path).startsWith('.') && !/\.(?:part|tmp|temp|download|crdownload)(?:\.|$)/i.test(basename(path))
+
+/** 文件选择固定为同一目录中的普通视频；规范化父目录，不跟随文件链接。 */
+export async function selectedVideoFiles(input: string[]): Promise<{ path: string; files: string[] }> {
+  if (!Array.isArray(input) || !input.length || input.length > 100_000
+    || input.some(path => typeof path !== 'string' || !isAbsolute(path) || path.length > 4096 || path.includes('\0') || !isVideoFile(path))) {
+    throw new Error('请选择有效的视频文件')
+  }
+  const path = await canonicalRoot(dirname(input[0])), files = new Set<string>()
+  for (const raw of input) {
+    if (await canonicalRoot(dirname(raw)) !== path) throw new Error('一次请选择同一目录内的视频文件')
+    const file = join(path, basename(raw))
+    await safeFile(path, file)
+    files.add(file)
+  }
+  return { path, files: [...files] }
+}
 export async function scanTree(root: string, signal?: AbortSignal): Promise<Map<string, Signature>> {
   if (await realpath(root) !== root || !(await lstat(root)).isDirectory()) throw new Error('监控目录已变化或不可访问')
   const files = new Map<string, Signature>(), directories = [root]
@@ -59,8 +77,7 @@ export async function scanTree(root: string, signal?: AbortSignal): Promise<Map<
       if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue
       const path = join(dir, entry.name)
       if (entry.isDirectory()) directories.push(path)
-      else if (entry.isFile() && extensions.has(extname(entry.name).toLowerCase())
-        && !/\.(?:part|tmp|temp|download|crdownload)(?:\.|$)/i.test(entry.name)) {
+      else if (entry.isFile() && isVideoFile(entry.name)) {
         const stat = await lstat(path)
         if (stat.isFile()) files.set(path, signature(stat))
       }

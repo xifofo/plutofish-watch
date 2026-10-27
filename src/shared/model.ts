@@ -27,6 +27,8 @@ export type Release = { id: string; name: string; resolution: string; dynamicRan
 export type WatchInput = {
   /** 省略时为持续监控；一次性任务只处理创建时的文件清单。 */
   mode?: 'watch' | 'once'
+  /** 一次性文件选择；省略时扫描整个目录，提供时只处理所选文件。 */
+  selectedFiles?: string[]
   cleanup?: LocalRetentionSettings
   path: string; title: string; sourceAccountId: string; work: Work; seasonNumber?: number
   /** 与首个目录共用发布配置；旧记录省略时仍为单目录，不限制目录数量。 */
@@ -109,6 +111,7 @@ export interface WatchAPI {
   snapshot(): Promise<Snapshot>
   connect(input: { url: string; key: string }): Promise<void>
   chooseDirectory(): Promise<string | null>
+  chooseFiles(): Promise<{ path: string; files: string[] } | null>
   chooseProbe(): Promise<string | null>
   searchWorks(input: WorkSearch): Promise<WorkPage>
   recognitionSample(path: string): Promise<RecognitionSample>

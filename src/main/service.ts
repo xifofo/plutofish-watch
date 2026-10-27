@@ -6,11 +6,11 @@ import { safeStorage } from 'electron'
 import { releaseSource, sourceReviewReason } from '../../vendor/publisher/src/integrations/plutofish/release-specs'
 import { releaseChoices } from '../../vendor/publisher/src/integrations/plutofish/release-selection'
 import type { PublicationDraft } from '../../vendor/publisher/src/integrations/plutofish/publication-types'
-import type { Release, Snapshot, WatchInput, WatchAPI } from '../shared/model'
+import type { Release, Snapshot, WatchInput, WatchAPI, OneTimeBatch } from '../shared/model'
 import { validateRetention } from '../shared/retention'
 import { watchPaths } from '../shared/watch-paths'
 import { bindingFor, stableKey, validateInput, validateWork, validateSource } from './bindings'
-import { canonicalRoot, episodeFromName, safeWatchFile, sameSignature, within, requiredWatchPath } from './files'
+import { canonicalRoot, episodeFromName, safeWatchFile, sameSignature, within, requiredWatchPath, selectedVideoFiles } from './files'
 import { atomicJSON, WatchStore } from './store'
 import { DirectoryWatcher } from './watcher'
 import { WatchPublisher } from './publisher'
@@ -135,11 +135,17 @@ export class WatchService {
     if (this.store.data.watches.length >= 100) throw new Error('最多支持 100 个目录任务，请移除已完成任务后再添加')
     const input = validateInput(raw, this.connection.view())
     const paths = await this.localPaths(input)
+    if (input.selectedFiles) {
+      const selection = await selectedVideoFiles(input.selectedFiles)
+      if (selection.path !== paths[0]) throw new Error('所选文件不属于本次目录，请重新选择')
+      input.selectedFiles = selection.files
+    }
+    const batch = input.mode === 'once' ? await createOneTimeBatch(paths[0], input.cleanup!, input.selectedFiles) : undefined
+    this.checkLocalOverlap({ ...input, path: paths[0], additionalPaths: paths.slice(1) }, batch)
     const releases = await this.releases(input)
     const release = releases.find(r => r.id === input.releaseId)
     if (input.versionMode !== 'auto' && !release) throw new Error('版本已变化，请重新查询并选择')
     const binding = bindingFor(this.connection.view(), input.sourceAccountId)
-    const batch = input.mode === 'once' ? await createOneTimeBatch(paths[0], input.cleanup!) : undefined
     this.store.data.watches.push({
       ...input, batch, path: paths[0], additionalPaths: paths.slice(1), binding, id: randomUUID(), releaseName: input.versionMode === 'auto' ? '自动归类' : release!.name,
       releaseVersion: release ? { name: release.name, resolution: release.resolution, dynamicRange: release.dynamicRange } : undefined,
@@ -151,16 +157,29 @@ export class WatchService {
     this.changed()
   }
 
-  private async localPaths(input: WatchInput, excludingId?: string): Promise<string[]> {
+  private async localPaths(input: WatchInput): Promise<string[]> {
     const paths: string[] = []
-    const existing = this.store.data.watches.filter(w => w.id !== excludingId && !w.batch?.deletedAt).flatMap(watchPaths)
     for (const raw of watchPaths(input)) {
       const path = await canonicalRoot(raw)
-      if (within(path, this.directory) || within(this.directory, path)) throw new Error('不能监控应用自身的数据目录或其父目录')
-      if ([...existing, ...paths].some(other => within(other, path) || within(path, other))) throw new Error('监控目录不能重复或互相嵌套')
+      if ((!input.selectedFiles && within(path, this.directory)) || within(this.directory, path)) throw new Error('不能监控应用自身的数据目录或其父目录')
+      if (paths.some(other => within(other, path) || within(path, other))) throw new Error('监控目录不能重复或互相嵌套')
       paths.push(path)
     }
     return paths
+  }
+
+  private checkLocalOverlap(input: WatchInput, batch?: OneTimeBatch, excludingId?: string): void {
+    // 固定文件清单只占用本次文件；持续监控和整目录清理仍占用完整目录。
+    const filesOnly = (root: WatchInput) => root.mode === 'once' && (root.selectedFiles !== undefined || !root.cleanup?.enabled)
+    const existing = this.store.data.watches.filter(w => w.id !== excludingId && !w.batch?.deletedAt)
+    const directories = existing.filter(w => !filesOnly(w)).flatMap(watchPaths)
+    const files = new Set(existing.filter(filesOnly).flatMap(w => w.batch!.files))
+    const overlap = filesOnly(input)
+      ? batch!.files.some(path => files.has(path) || directories.some(directory => within(directory, path)))
+      : watchPaths(input).some(path => directories.some(other => within(other, path) || within(path, other)) || [...files].some(file => within(path, file)))
+    if (overlap) {
+      throw new Error(input.mode === 'once' ? '所选文件或目录与现有任务重叠，请选择其他文件或先移除原任务' : '监控目录不能重复或互相嵌套')
+    }
   }
 
   async backfill(id: string): Promise<number> {
@@ -203,7 +222,8 @@ export class WatchService {
     if (!root) throw new Error('监控目录不存在')
     if (root.mode === 'once' || raw.watch?.mode === 'once') throw new Error('一次性任务的目录和发布配置已固定，请移除后重新创建')
     const input = validateInput(raw.watch, this.connection.view())
-    const paths = await this.localPaths(input, root.id)
+    const paths = await this.localPaths(input)
+    this.checkLocalOverlap({ ...input, path: paths[0], additionalPaths: paths.slice(1) }, undefined, root.id)
     const releases = await this.releases(input)
     const release = releases.find(r => r.id === input.releaseId)
     if (input.versionMode !== 'auto' && !release) throw new Error('版本已变化，请重新查询并选择')

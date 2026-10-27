@@ -2,6 +2,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, shell, Tray } from 'electron'
 import { join } from 'node:path'
 import { WatchService } from './service'
+import { selectedVideoFiles, videoExtensions } from './files'
 import createEd2kWorker from './ed2k-worker?nodeWorker'
 import { createED2KComputer } from '../../vendor/publisher/src/integrations/plutofish/ed2k-computer'
 
@@ -94,6 +95,12 @@ else {
             case 'chooseDirectory': {
               const result = await dialog.showOpenDialog(currentWindow, { title: '选择本地目录', properties: ['openDirectory'] })
               value = result.canceled ? null : result.filePaths[0]; break
+            }
+            case 'chooseFiles': {
+              const result = await dialog.showOpenDialog(currentWindow, { title: '选择上传的视频文件',
+                properties: ['openFile', 'multiSelections'], filters: [{ name: '视频文件', extensions: videoExtensions }] })
+              value = result.canceled || !result.filePaths.length ? null : await selectedVideoFiles(result.filePaths)
+              break
             }
             case 'chooseProbe': {
               const result = await dialog.showOpenDialog(currentWindow, { title: '选择 ffprobe 程序', properties: ['openFile'] })

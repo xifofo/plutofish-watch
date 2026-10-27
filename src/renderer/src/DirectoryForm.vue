@@ -78,7 +78,28 @@ async function perform(fn: () => Promise<void>) {
   finally { loading.value = false }
 }
 async function chooseDirectory(index: number) {
-  await perform(async () => { const path = await window.plutoWatch.chooseDirectory(); if (path) localPaths.value[index] = path })
+  await perform(async () => {
+    const path = await window.plutoWatch.chooseDirectory()
+    if (path) {
+      if (form.selectedFiles && form.cleanup) form.cleanup.enabled = false
+      form.selectedFiles = undefined; localPaths.value[index] = path
+    }
+  })
+}
+async function chooseFiles() {
+  await perform(async () => {
+    const selection = await window.plutoWatch.chooseFiles()
+    if (!selection) return
+    if (form.cleanup) form.cleanup.enabled = false
+    form.selectedFiles = selection.files; localPaths.value = [selection.path]
+  })
+}
+function removeFile(path: string) {
+  form.selectedFiles = form.selectedFiles?.filter(file => file !== path)
+  if (!form.selectedFiles?.length) {
+    form.selectedFiles = undefined; localPaths.value = ['']
+    if (form.cleanup) form.cleanup.enabled = false
+  }
 }
 async function query() {
   await perform(async () => {
@@ -126,14 +147,25 @@ function submit() {
 <template>
   <button class="link back" :disabled="!!creationDialog" @click="emit('back')"><Icon name="back" :size="16" />{{ once ? '返回一次性上传' : '返回监控目录' }}</button>
   <div class="page-heading"><h1>{{ once ? '一次性上传' : initial ? '编辑监控目录' : '添加监控目录' }}</h1></div>
-  <p v-if="once" class="notice">选择目录并确认识别结果后，上传当前目录及子目录中的视频并制作 ED2K。后续新增文件不会自动加入。</p>
+  <p v-if="once" class="notice">选择文件或目录，确认作品后上传并制作 ED2K。选择文件时仅上传所选视频；选择目录时包含子目录。后续新增文件不会自动加入。</p>
   <p v-if="initial" class="notice">未开始发布的文件采用新配置；已开始或完成的任务继续沿用原配置。移除或更换本地目录会停止该目录中未开始发布的任务，保留目录继续监控。</p>
   <div v-if="error" role="alert" class="notice error">{{ error }}</div>
   <form @submit.prevent="submit">
     <fieldset :disabled="busy || loading || !!creationDialog">
       <section class="panel form-section">
-        <h2 class="section-heading">本地目录</h2>
-        <div class="local-directories">
+        <h2 class="section-heading">{{ once ? '本地文件或目录' : '本地目录' }}</h2>
+        <div v-if="once" class="file-selection-actions">
+          <button type="button" class="button secondary" @click="chooseFiles"><Icon name="file" :size="17" />选择文件</button>
+          <button v-if="form.selectedFiles" type="button" class="button secondary" @click="chooseDirectory(0)"><Icon name="folder" :size="17" />选择目录</button>
+          <span class="hint">可多选同一目录内的视频，所有文件共用同一作品和季。</span>
+        </div>
+        <div v-if="form.selectedFiles" class="selected-files" aria-label="本次上传文件">
+          <p class="hint">已选择 {{ form.selectedFiles.length }} 个视频</p>
+          <div v-for="file in form.selectedFiles" :key="file" class="selected-file">
+            <span :title="file">{{ file }}</span><button type="button" class="link muted" :aria-label="`移除文件 ${file}`" @click="removeFile(file)">移除</button>
+          </div>
+        </div>
+        <div v-else class="local-directories">
           <div v-for="(_, index) in localPaths" :key="index" class="local-directory">
             <div class="input-action"><input :id="`local-path-${index}`" v-model="localPaths[index]" required :aria-label="`本地目录 ${index + 1}`" placeholder="选择包含视频文件的目录" /><button type="button" class="button secondary" :aria-label="`选择本地目录 ${index + 1}`" @click="chooseDirectory(index)"><Icon name="folder" :size="17" />选择目录</button><button v-if="localPaths.length > 1" type="button" class="link muted" :aria-label="`移除本地目录 ${index + 1}`" @click="localPaths.splice(index, 1)">移除</button></div>
           </div>
@@ -145,7 +177,7 @@ function submit() {
       </section>
       <section class="panel form-section">
         <h2 class="section-heading">作品与版本</h2>
-        <DirectoryRecognition v-if="!initial" :path="form.path" :source-account-id="form.sourceAccountId" :connection-key="`${state.connection.url}:${state.connection.identity?.id ?? ''}`" :draft-key="draftKey" :can-replace="(!form.title && !form.work.tmdbId) || lastRecognitionDraft === draftKey" :disabled="busy || loading || !!creationDialog" @pending="recognitionPending = $event" @apply="applyRecognition" @confirm="applyConfirmedWork" />
+        <DirectoryRecognition v-if="!initial" :path="form.selectedFiles?.[0] ?? form.path" :source-account-id="form.sourceAccountId" :connection-key="`${state.connection.url}:${state.connection.identity?.id ?? ''}`" :draft-key="draftKey" :can-replace="(!form.title && !form.work.tmdbId) || lastRecognitionDraft === draftKey" :disabled="busy || loading || !!creationDialog" @pending="recognitionPending = $event" @apply="applyRecognition" @confirm="applyConfirmedWork" />
         <div class="form-grid">
           <label>资源分类<select v-model="form.work.category" required><option value="" disabled>请选择资源分类</option><option v-for="c in categories" :key="c.value" :value="c.value">{{ c.label }}</option></select></label>
           <label>作品类型<select v-model="form.work.mediaType"><option value="tv">剧集</option><option value="movie">电影</option></select></label>
@@ -176,12 +208,12 @@ function submit() {
         </div>
       </section>
       <section v-if="once && form.cleanup && form.work.tmdbId && form.title" class="panel form-section once-cleanup">
-        <h2 class="section-heading">上传后的本地目录</h2>
-        <label class="checkbox"><input v-model="form.cleanup.enabled" type="checkbox" aria-label="自动删除本次目录" /><span>完成后自动删除这个文件夹</span></label>
-        <label class="cleanup-days">全部上传并同步 ED2K 后保留 <input v-model.number="form.cleanup.days" type="number" min="1" max="365" step="1" required :disabled="!form.cleanup.enabled" aria-label="目录保留天数" /> 天</label>
-        <p class="hint">{{ form.cleanup.enabled ? '到期删除整个所选文件夹，包括字幕、封面等附属文件。发现新增或修改内容时会停止删除。' : '保留本次目录，不受监控目录的自动清理设置影响。' }} 可在任务列表中取消删除；退出应用时暂停处理，下次启动后继续检查。</p>
+        <h2 class="section-heading">上传后的{{ form.selectedFiles ? '所选文件' : '本地目录' }}</h2>
+        <label class="checkbox"><input v-model="form.cleanup.enabled" type="checkbox" :aria-label="form.selectedFiles ? '自动删除所选文件' : '自动删除本次目录'" /><span>完成后自动删除{{ form.selectedFiles ? '所选文件' : '这个文件夹' }}</span></label>
+        <label class="cleanup-days">全部上传并同步 ED2K 后保留 <input v-model.number="form.cleanup.days" type="number" min="1" max="365" step="1" required :disabled="!form.cleanup.enabled" :aria-label="form.selectedFiles ? '文件保留天数' : '目录保留天数'" /> 天</label>
+        <p class="hint">{{ form.selectedFiles ? (form.cleanup.enabled ? '到期仅删除所选视频，保留文件夹与其他文件。所选文件发生变化时会停止删除。' : '保留所选文件，不受监控目录的自动清理设置影响。') : (form.cleanup.enabled ? '到期删除整个所选文件夹，包括字幕、封面等附属文件。发现新增或修改内容时会停止删除。' : '保留本次目录，不受监控目录的自动清理设置影响。') }} 可在任务列表中取消删除；退出应用时暂停处理，下次启动后继续检查。</p>
       </section>
-      <div class="form-footer submit-row"><button class="button primary" type="submit" :disabled="recognitionPending || creationPending || !form.work.tmdbId || !form.title || (form.versionMode !== 'auto' && !form.releaseId)"><Icon :name="once ? 'upload' : initial ? 'check' : 'plus'" :size="18" />{{ busy ? '正在保存…' : once ? '开始一次性上传' : initial ? '保存修改' : '创建并开始监控' }}</button></div>
+      <div class="form-footer submit-row"><button class="button primary" type="submit" :disabled="!form.path || recognitionPending || creationPending || !form.work.tmdbId || !form.title || (form.versionMode !== 'auto' && !form.releaseId)"><Icon :name="once ? 'upload' : initial ? 'check' : 'plus'" :size="18" />{{ busy ? '正在保存…' : once ? '开始一次性上传' : initial ? '保存修改' : '创建并开始监控' }}</button></div>
     </fieldset>
   </form>
   <DirectoryCreateDialog v-if="creationDialog" :input="creationDialog.input" :category-label="creationDialog.categoryLabel" @close="creationDialog = undefined" @created="createdFolders" />
@@ -190,6 +222,11 @@ function submit() {
 .section-heading{margin-bottom:18px}
 .cleanup-days{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:16px 0}
 .cleanup-days input{width:80px;margin:0;text-align:center}
+.file-selection-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px}
+.selected-files{max-height:260px;overflow:auto;margin-bottom:16px}
+.selected-file{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.selected-file span{flex:1;min-width:0;overflow-wrap:anywhere;font-size:12px}
+.selected-file button{flex-shrink:0}
 .local-directories{display:grid;gap:12px}
 .local-directory .input-action input,.local-directory .input-action .button{margin-top:0}
 .local-directory .input-action input{min-width:0}

@@ -11,6 +11,7 @@ const api: WatchAPI = {
   snapshot: () => invoke('snapshot'),
   connect: input => invoke('connect', input),
   chooseDirectory: () => invoke('chooseDirectory'),
+  chooseFiles: () => invoke('chooseFiles'),
   chooseProbe: () => invoke('chooseProbe'),
   searchWorks: input => invoke('searchWorks', input),
   recognitionSample: path => invoke('recognitionSample', path),

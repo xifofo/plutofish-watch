@@ -26,10 +26,11 @@ function retentionLabel(job: WatchJob): string {
   if (job.retention?.state === 'deleted') return '本地文件已清理'
   const root = props.watches?.find(w => w.id === job.watchId) ?? job.watchSnapshot
   if (root?.mode === 'once') {
-    if (root.batch?.deletedAt) return '本地文件夹已清理'
-    if (!root.cleanup?.enabled) return '一次性上传 · 保留本地目录'
+    const target = root.selectedFiles ? '所选文件' : '整个文件夹'
+    if (root.batch?.deletedAt) return `${target}已清理`
+    if (!root.cleanup?.enabled) return `一次性上传 · 保留${target}`
     if (root.batch?.cleanupError) return root.batch.cleanupError
-    if (root.batch?.deleteAt) return `预计 ${new Date(root.batch.deleteAt).toLocaleString('zh-CN')} 清理整个文件夹`
+    if (root.batch?.deleteAt) return `预计 ${new Date(root.batch.deleteAt).toLocaleString('zh-CN')} 清理${target}`
     return '等待整批上传与 ED2K 同步后开始保留计时'
   }
   if (!props.retention.enabled || job.status !== 'completed') return ''

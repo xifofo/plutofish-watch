@@ -56,7 +56,7 @@ async function sample(current: number) {
     pending.value = false; emit('pending', false)
     return
   }
-  pending.value = true; emit('pending', true); message.value = '正在查找目录中的视频文件…'
+  pending.value = true; emit('pending', true); message.value = '正在读取视频名称…'
   try {
     const sample = await window.plutoWatch.recognitionSample(props.path)
     if (current !== generation) return
@@ -68,7 +68,7 @@ async function sample(current: number) {
     }
     await recognize(current)
   } catch (e) {
-    if (current === generation) { message.value = ''; error.value = e instanceof Error ? e.message : '无法读取目录，可输入文件名识别' }
+    if (current === generation) { message.value = ''; error.value = e instanceof Error ? e.message : '无法读取所选路径，可输入文件名识别' }
   } finally {
     if (current === generation) { pending.value = false; emit('pending', false) }
   }

@@ -3,6 +3,7 @@ defineProps<{ name: string; size?: number }>()
 const paths: Record<string, string> = {
   grid: 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
   folder: 'M3 7V5a1 1 0 0 1 1-1h5l3 3h8a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7z',
+  file: 'M14 2H5v20h14V7l-5-5z M14 2v6h5',
   list: 'M8 5h13 M8 12h13 M8 19h13 M3 5h.01 M3 12h.01 M3 19h.01',
   settings: 'M4 7h16 M4 17h16 M8 4v6 M16 14v6',
   plus: 'M12 5v14 M5 12h14',
