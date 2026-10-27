@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import type { DiskState, WatchJob, WatchRoot } from '../shared/model'
 import { defaultRetention, validateRetention } from '../shared/retention'
 import { validateWatchPaths } from '../shared/watch-paths'
+import { validateOneTimeRoot } from './one-time'
 
 export function atomicJSON(path: string, data: unknown): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
@@ -35,6 +36,7 @@ export class WatchStore {
     }
     value.retention = value.retention === undefined ? defaultRetention() : validateRetention(value.retention)
     for (const root of [...value.watches, ...value.jobs.flatMap(job => job.watchSnapshot ? [job.watchSnapshot] : [])]) {
+      validateOneTimeRoot(root)
       const paths = validateWatchPaths(root)
       if (root.initializedPaths !== undefined && (!Array.isArray(root.initializedPaths)
         || root.initializedPaths.some(path => typeof path !== 'string' || !paths.includes(path)))) {

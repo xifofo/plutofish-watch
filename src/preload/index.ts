@@ -22,6 +22,7 @@ const api: WatchAPI = {
   updateWatch: input => invoke('updateWatch', input),
   setSourcePreset: input => invoke('setSourcePreset', input),
   setRetention: input => invoke('setRetention', input),
+  cancelCleanup: id => invoke('cancelCleanup', id),
   toggleWatch: id => invoke('toggleWatch', id),
   removeWatch: id => invoke('removeWatch', id),
   scan: () => invoke('scan'),

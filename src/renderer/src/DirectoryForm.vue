@@ -8,10 +8,12 @@ import DirectoryRecognition from './DirectoryRecognition.vue'
 import DirectoryCreateDialog from './DirectoryCreateDialog.vue'
 import { adjustCreationTarget, creationSegments, directoryCreated, directoryCreationPending } from '../../shared/directory-creation'
 import { watchPaths } from '../../shared/watch-paths'
+import { defaultOneTimeRetention } from '../../shared/retention'
 
-const props = defineProps<{ state: Snapshot; busy: boolean; initial?: WatchRoot }>()
+const props = defineProps<{ state: Snapshot; busy: boolean; initial?: WatchRoot; once?: boolean }>()
 const emit = defineEmits<{ save: [input: WatchInput]; back: [] }>()
 const form = reactive<WatchInput>(props.initial ? JSON.parse(JSON.stringify({ ...props.initial, versionMode: props.initial.versionMode ?? 'fixed' })) : {
+  mode: props.once ? 'once' : 'watch', cleanup: props.once ? defaultOneTimeRetention() : undefined,
   path: '', title: '', work: { mediaType: 'tv', tmdbId: '', category: props.state.connection.identity?.categories?.[0]?.value ?? '' },
   sourceAccountId: props.state.connection.identity?.sourceAccount.id ?? '', seasonNumber: 1,
   versionMode: 'auto', releaseId: '', directoryId: '0', directoryPath: '/', includeExisting: true, stableSeconds: 30,
@@ -122,8 +124,9 @@ function submit() {
 }
 </script>
 <template>
-  <button class="link back" :disabled="!!creationDialog" @click="emit('back')"><Icon name="back" :size="16" />返回监控目录</button>
-  <div class="page-heading"><h1>{{ initial ? '编辑监控目录' : '添加监控目录' }}</h1></div>
+  <button class="link back" :disabled="!!creationDialog" @click="emit('back')"><Icon name="back" :size="16" />{{ once ? '返回一次性上传' : '返回监控目录' }}</button>
+  <div class="page-heading"><h1>{{ once ? '一次性上传' : initial ? '编辑监控目录' : '添加监控目录' }}</h1></div>
+  <p v-if="once" class="notice">选择目录并确认识别结果后，上传当前目录及子目录中的视频并制作 ED2K。后续新增文件不会自动加入。</p>
   <p v-if="initial" class="notice">未开始发布的文件采用新配置；已开始或完成的任务继续沿用原配置。移除或更换本地目录会停止该目录中未开始发布的任务，保留目录继续监控。</p>
   <div v-if="error" role="alert" class="notice error">{{ error }}</div>
   <form @submit.prevent="submit">
@@ -135,10 +138,10 @@ function submit() {
             <div class="input-action"><input :id="`local-path-${index}`" v-model="localPaths[index]" required :aria-label="`本地目录 ${index + 1}`" placeholder="选择包含视频文件的目录" /><button type="button" class="button secondary" :aria-label="`选择本地目录 ${index + 1}`" @click="chooseDirectory(index)"><Icon name="folder" :size="17" />选择目录</button><button v-if="localPaths.length > 1" type="button" class="link muted" :aria-label="`移除本地目录 ${index + 1}`" @click="localPaths.splice(index, 1)">移除</button></div>
           </div>
         </div>
-        <button type="button" class="link add-local-directory" @click="localPaths.push('')"><Icon name="plus" :size="15" />添加本地目录</button>
+        <button v-if="!once" type="button" class="link add-local-directory" @click="localPaths.push('')"><Icon name="plus" :size="15" />添加本地目录</button>
         <p v-if="localPaths.length > 1" class="hint multi-directory-hint">所有目录共用同一作品{{ form.work.mediaType === 'tv' ? '和季' : '' }}。<template v-if="!initial">按第一个目录识别。</template></p>
         <div class="form-grid"><label>文件稳定等待（秒）<input v-model.number="form.stableSeconds" type="number" min="10" max="3600" required /></label>
-          <label class="checkbox"><input v-model="form.includeExisting" type="checkbox" :disabled="!hasNewPaths" /><span>首次补传历史文件<small v-if="!hasNewPaths">原目录请在列表中点击“补传历史”</small><small v-else-if="initial">仅作用于新加入的目录</small></span></label></div>
+          <label v-if="!once" class="checkbox"><input v-model="form.includeExisting" type="checkbox" :disabled="!hasNewPaths" /><span>首次补传历史文件<small v-if="!hasNewPaths">原目录请在列表中点击“补传历史”</small><small v-else-if="initial">仅作用于新加入的目录</small></span></label></div>
       </section>
       <section class="panel form-section">
         <h2 class="section-heading">作品与版本</h2>
@@ -172,13 +175,21 @@ function submit() {
           <div class="form-footer"><button type="button" class="button secondary" @click="showCloud = false">关闭</button><button type="button" class="button primary" @click="selectCloud">选用当前目录</button></div>
         </div>
       </section>
-      <div class="form-footer submit-row"><button class="button primary" type="submit" :disabled="recognitionPending || creationPending || !form.work.tmdbId || !form.title || (form.versionMode !== 'auto' && !form.releaseId)"><Icon :name="initial ? 'check' : 'plus'" :size="18" />{{ busy ? '正在保存…' : initial ? '保存修改' : '创建并开始监控' }}</button></div>
+      <section v-if="once && form.cleanup && form.work.tmdbId && form.title" class="panel form-section once-cleanup">
+        <h2 class="section-heading">上传后的本地目录</h2>
+        <label class="checkbox"><input v-model="form.cleanup.enabled" type="checkbox" aria-label="自动删除本次目录" /><span>完成后自动删除这个文件夹</span></label>
+        <label class="cleanup-days">全部上传并同步 ED2K 后保留 <input v-model.number="form.cleanup.days" type="number" min="1" max="365" step="1" required :disabled="!form.cleanup.enabled" aria-label="目录保留天数" /> 天</label>
+        <p class="hint">{{ form.cleanup.enabled ? '到期删除整个所选文件夹，包括字幕、封面等附属文件。发现新增或修改内容时会停止删除。' : '保留本次目录，不受监控目录的自动清理设置影响。' }} 可在任务列表中取消删除；退出应用时暂停处理，下次启动后继续检查。</p>
+      </section>
+      <div class="form-footer submit-row"><button class="button primary" type="submit" :disabled="recognitionPending || creationPending || !form.work.tmdbId || !form.title || (form.versionMode !== 'auto' && !form.releaseId)"><Icon :name="once ? 'upload' : initial ? 'check' : 'plus'" :size="18" />{{ busy ? '正在保存…' : once ? '开始一次性上传' : initial ? '保存修改' : '创建并开始监控' }}</button></div>
     </fieldset>
   </form>
   <DirectoryCreateDialog v-if="creationDialog" :input="creationDialog.input" :category-label="creationDialog.categoryLabel" @close="creationDialog = undefined" @created="createdFolders" />
 </template>
 <style scoped>
 .section-heading{margin-bottom:18px}
+.cleanup-days{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:16px 0}
+.cleanup-days input{width:80px;margin:0;text-align:center}
 .local-directories{display:grid;gap:12px}
 .local-directory .input-action input,.local-directory .input-action .button{margin-top:0}
 .local-directory .input-action input{min-width:0}

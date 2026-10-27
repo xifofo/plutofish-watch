@@ -2,7 +2,7 @@
 import { watch, type FSWatcher } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { relative } from 'node:path'
-import { episodeFromName, sameSignature, scanTree, within, requiredWatchPath } from './files'
+import { episodeFromName, sameSignature, scanTree, within, requiredWatchPath, safeFile, canonicalRoot } from './files'
 import { initializedWatchPaths, watchPaths } from '../shared/watch-paths'
 import { WatchStore } from './store'
 import type { WatchJob, WatchRoot } from '../shared/model'
@@ -28,7 +28,7 @@ export class DirectoryWatcher {
   }
 
   refresh(): void {
-    const active = new Map(this.store.data.watches.filter(w => w.enabled)
+    const active = new Map(this.store.data.watches.filter(w => w.enabled && w.mode !== 'once')
       .flatMap(root => watchPaths(root).map(path => [JSON.stringify([root.id, path]), { root, path }] as const)))
     for (const [key, handle] of this.handles) {
       if (!active.has(key)) { handle.close(); this.handles.delete(key) }
@@ -58,6 +58,7 @@ export class DirectoryWatcher {
   /** 将首次扫描明确忽略的历史文件补入队列；保留已完成、失败及手动取消的任务决定。only 只补其中符合条件的文件。 */
   async backfill(id: string, only?: (path: string) => boolean): Promise<number> {
     const root = this.store.data.watches.find(w => w.id === id)
+    if (root?.mode === 'once') throw new Error('一次性上传不补扫新增文件，请重新创建任务')
     if (!root?.enabled || this.abort.signal.aborted) throw new Error('请先恢复目录监控')
     await this.scanOne(root)
     if (root.error) throw new Error(root.error)
@@ -78,7 +79,7 @@ export class DirectoryWatcher {
   }
 
   scanOne(root: WatchRoot): Promise<void> {
-    if (this.abort.signal.aborted || !root.enabled) return Promise.resolve()
+    if (this.abort.signal.aborted || !root.enabled || (root.mode === 'once' && root.batch?.completedAt !== undefined)) return Promise.resolve()
     const running = this.scanning.get(root.id)
     if (running) return running
     const promise = this.perform(root).finally(() => { this.scanning.delete(root.id) })
@@ -99,7 +100,20 @@ export class DirectoryWatcher {
     for (const directory of watchPaths(root)) {
       if (!root.enabled || this.abort.signal.aborted) return
       let files: Awaited<ReturnType<typeof scanTree>>
-      try { files = await scanTree(directory, this.abort.signal) }
+      try {
+        if (root.mode === 'once') {
+          if (await canonicalRoot(directory) !== directory) throw new Error('一次性目录路径已变化')
+          files = new Map()
+          for (const path of root.batch!.files) {
+            if (!root.enabled || this.abort.signal.aborted) return
+            try { files.set(path, await safeFile(directory, path)) }
+            catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+              failures.push(path)
+            }
+          }
+        } else files = await scanTree(directory, this.abort.signal)
+      }
       catch { failures.push(directory); continue }
       if (!root.enabled || this.abort.signal.aborted) return
       await this.observe(root, directory, files, initialized.has(directory))
@@ -113,7 +127,7 @@ export class DirectoryWatcher {
     if (!root.enabled || this.abort.signal.aborted) return
     root.initializedPaths = [...initialized]
     root.initialized = watchPaths(root).every(path => initialized.has(path))
-    root.error = failures.length ? `目录或子目录暂不可访问，已保留记录；恢复后会自动补扫：${failures.join('、')}` : ''
+    root.error = failures.length ? `${root.mode === 'once' ? '本次文件已变化或暂不可访问，请检查文件队列' : '目录或子目录暂不可访问，已保留记录；恢复后会自动补扫'}：${failures.join('、')}` : ''
     this.store.save(); this.changed()
   }
 
@@ -162,7 +176,8 @@ export class DirectoryWatcher {
         await this.invalidated(job)
         job.status = 'cancelled'; job.error = '文件已移走，原任务停止'
       }
-      delete observations[path]
+      // 一次性清单保留缺失项，文件重新出现也不能重复入队。
+      if (root.mode !== 'once') delete observations[path]
     }
   }
 

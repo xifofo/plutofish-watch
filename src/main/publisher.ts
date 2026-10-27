@@ -21,6 +21,7 @@ import { tierHeight } from '../../vendor/publisher/src/lib/name'
 import { releaseSource, sourceReviewReason, normalizeRange } from '../../vendor/publisher/src/integrations/plutofish/release-specs'
 import { actualVersionSummary } from '../../vendor/publisher/src/lib/actual-version'
 import type { RetentionOptions } from '../../vendor/publisher/src/integrations/plutofish/publication-retention'
+import { OneTimeBatches } from './one-time'
 
 export class WatchPublisher {
   readonly worker: PublicationWorker
@@ -28,11 +29,16 @@ export class WatchPublisher {
   private closed = false
   private fatalError = false
   private timer?: ReturnType<typeof setInterval>
+  private batches: OneTimeBatches
   constructor(
     private store: WatchStore, private connection: PlutoFishConnection, directory: string,
     private changed: () => void, private fatal: (error: unknown) => void,
     private retryOptions: { now?: () => number; baseMs?: number; maxMs?: number; factory?: OSSFactory; compute?: RetentionOptions['compute'] } = {},
   ) {
+    this.batches = new OneTimeBatches(store, changed, root => {
+      if (!this.eligible(root)) return false
+      try { this.connection.assertBinding(root.binding); return true } catch { return false }
+    }, () => this.now())
     this.worker = new PublicationWorker(connection, (draft, transient) => this.update(draft, transient), {
       directory: join(directory, 'publications'), factory: retryOptions.factory, manual: true, now: retryOptions.now, retention: {
         compute: retryOptions.compute,
@@ -113,7 +119,7 @@ export class WatchPublisher {
     const job = this.store.data.jobs.find(j => j.fileKey === state.draft.fileKey)
     const root = this.store.data.watches.find(w => w.id === job?.watchId)
     const directory = root && job ? watchPathFor(root, job.path) : undefined
-    if (!job || !root || !this.eligible(root) || job.status !== 'completed' || job.changed || job.manuallyPaused
+    if (!job || !root || root.mode === 'once' || !this.eligible(root) || job.status !== 'completed' || job.changed || job.manuallyPaused
       || !job.synced || !job.ed2kSaved || job.path !== state.draft.output || !directory) return false
     // 监控根目录或中间目录被改成链接时，不能沿旧路径清理其他目录里的文件。
     try { return realpathSync(directory) === directory && realpathSync(job.path) === resolve(job.path) }
@@ -136,7 +142,10 @@ export class WatchPublisher {
 
   async tick(): Promise<void> {
     if (this.closed || this.fatalError || !this.connection.ready) return
+    this.registerBatchDeletions()
     await this.worker.tick()
+    this.batches.tick()
+    this.registerBatchDeletions()
     for (const job of this.store.data.jobs) {
       if (job.status === 'failed' && job.retry?.nextAt !== undefined && job.retry.nextAt <= this.now()
         && !job.manuallyPaused && !job.changed && this.eligible(this.store.data.watches.find(w => w.id === job.watchId))) {
@@ -153,6 +162,11 @@ export class WatchPublisher {
     const promise = this.prepare(root, job, abort.signal).finally(() => { this.preparing = undefined })
     this.preparing = { jobId: job.id, abort, promise }
     await promise
+  }
+
+  private registerBatchDeletions(): void {
+    this.worker.localFilesDeleted(this.store.data.jobs.filter(job => job.fileKey &&
+      this.store.data.watches.some(root => root.id === job.watchId && root.mode === 'once' && root.batch?.deletedAt !== undefined)).map(job => job.fileKey!))
   }
 
   private async prepare(root: WatchRoot, job: WatchJob, signal: AbortSignal): Promise<void> {

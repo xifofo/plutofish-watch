@@ -1,6 +1,7 @@
 import type { LocalRetentionSettings } from './model'
 
 export const defaultRetention = (): LocalRetentionSettings => ({ enabled: false, days: 7 })
+export const defaultOneTimeRetention = (): LocalRetentionSettings => ({ enabled: false, days: 1 })
 
 export function validateRetention(value: unknown): LocalRetentionSettings {
   const settings = value as LocalRetentionSettings | null

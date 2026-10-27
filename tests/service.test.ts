@@ -159,3 +159,23 @@ test('固定版本的剧集目录首次未补传时，按 PlutoFish 已就绪集
   expect(await service.syncHistory(now + 6 * 3600_000)).toBe(0)
   expect([queries, service.store.data.jobs.length]).toEqual([before + 1, 1])
 })
+
+test('一次性任务通过服务创建，默认保留一天且不自动删除，配置固定并可取消清理', async () => {
+  const { service, root, temp } = await setup()
+  const media = join(temp, 'once'); await mkdir(media); await writeFile(join(media, 'Show.S01E01.mp4'), 'once')
+  await service.add({ ...root, path: media, mode: 'once', includeExisting: false })
+  const once = service.store.data.watches.find(w => w.mode === 'once')!
+  expect(once.cleanup).toEqual({ enabled: false, days: 1 }); expect(once.includeExisting).toBe(true)
+  expect(once.batch!.files).toHaveLength(1)
+  expect(service.store.data.jobs.filter(j => j.watchId === once.id)).toHaveLength(1)
+  await expect(service.updateWatch({ id: once.id, watch: once })).rejects.toThrow('已固定')
+  await expect(service.updateWatch({ id: root.id, watch: { ...root, mode: 'once' } })).rejects.toThrow('已固定')
+  await service.removeWatch(once.id)
+  await service.add({ ...root, path: media, mode: 'once', cleanup: { enabled: true, days: 5 } })
+  const next = service.store.data.watches.find(w => w.mode === 'once')!
+  expect(next.cleanup).toEqual({ enabled: true, days: 5 })
+  expect(next.batch!.entries?.length).toBe(2)
+  await service.cancelCleanup(next.id)
+  expect(next.cleanup!.enabled).toBe(false); expect(next.batch!.deleteAt).toBeUndefined()
+  await expect(service.add({ ...root, path: media, mode: 'once', cleanup: { enabled: true, days: 0 } })).rejects.toThrow('保留天数')
+})

@@ -20,6 +20,7 @@ import { searchWorks } from './work-search'
 import { recognitionSample, recognizeFile } from './recognition'
 import { applyWatchEdit } from './watch-edit'
 import { watchVersionChoices } from './versions'
+import { createOneTimeBatch } from './one-time'
 import type { RetentionOptions } from '../../vendor/publisher/src/integrations/plutofish/publication-retention'
 
 /** 首次扫描忽略的历史文件按 PlutoFish 进度核对的间隔 */
@@ -131,15 +132,16 @@ export class WatchService {
 
   async add(raw: WatchInput): Promise<void> {
     if (this.fatalError) throw new Error(this.fatalError)
-    if (this.store.data.watches.length >= 100) throw new Error('最多支持 100 个监控目录')
+    if (this.store.data.watches.length >= 100) throw new Error('最多支持 100 个目录任务，请移除已完成任务后再添加')
     const input = validateInput(raw, this.connection.view())
     const paths = await this.localPaths(input)
     const releases = await this.releases(input)
     const release = releases.find(r => r.id === input.releaseId)
     if (input.versionMode !== 'auto' && !release) throw new Error('版本已变化，请重新查询并选择')
     const binding = bindingFor(this.connection.view(), input.sourceAccountId)
+    const batch = input.mode === 'once' ? await createOneTimeBatch(paths[0], input.cleanup!) : undefined
     this.store.data.watches.push({
-      ...input, path: paths[0], additionalPaths: paths.slice(1), binding, id: randomUUID(), releaseName: input.versionMode === 'auto' ? '自动归类' : release!.name,
+      ...input, batch, path: paths[0], additionalPaths: paths.slice(1), binding, id: randomUUID(), releaseName: input.versionMode === 'auto' ? '自动归类' : release!.name,
       releaseVersion: release ? { name: release.name, resolution: release.resolution, dynamicRange: release.dynamicRange } : undefined,
       enabled: true, initialized: false, createdAt: new Date().toISOString(),
     })
@@ -151,7 +153,7 @@ export class WatchService {
 
   private async localPaths(input: WatchInput, excludingId?: string): Promise<string[]> {
     const paths: string[] = []
-    const existing = this.store.data.watches.filter(w => w.id !== excludingId).flatMap(watchPaths)
+    const existing = this.store.data.watches.filter(w => w.id !== excludingId && !w.batch?.deletedAt).flatMap(watchPaths)
     for (const raw of watchPaths(input)) {
       const path = await canonicalRoot(raw)
       if (within(path, this.directory) || within(this.directory, path)) throw new Error('不能监控应用自身的数据目录或其父目录')
@@ -175,7 +177,7 @@ export class WatchService {
     if (this.fatalError || this.stopped || !this.connection.ready) return 0
     let restored = 0, checked = false
     for (const root of this.store.data.watches) {
-      if (!root.enabled || !root.initialized || root.work.mediaType !== 'tv' || (root.versionMode ?? 'fixed') !== 'fixed' || !root.releaseId) continue
+      if (root.mode === 'once' || !root.enabled || !root.initialized || root.work.mediaType !== 'tv' || (root.versionMode ?? 'fixed') !== 'fixed' || !root.releaseId) continue
       if (now - (root.progressAt ?? 0) < HISTORY_SYNC_MS) continue
       checked = true
       if (!Object.values(this.store.data.observations[root.id] ?? {}).some(o => o.ignored)) { root.progressAt = now; continue }
@@ -199,6 +201,7 @@ export class WatchService {
     if (this.fatalError || this.stopped) throw new Error(this.fatalError || '客户端已停止')
     const root = this.store.data.watches.find(w => w.id === raw?.id)
     if (!root) throw new Error('监控目录不存在')
+    if (root.mode === 'once' || raw.watch?.mode === 'once') throw new Error('一次性任务的目录和发布配置已固定，请移除后重新创建')
     const input = validateInput(raw.watch, this.connection.view())
     const paths = await this.localPaths(input, root.id)
     const releases = await this.releases(input)
@@ -346,6 +349,15 @@ export class WatchService {
   async setRetention(input: Parameters<WatchAPI['setRetention']>[0]): Promise<void> {
     if (this.fatalError || this.stopped) throw new Error(this.fatalError || '客户端已停止')
     this.store.data.retention = validateRetention(input)
+    this.store.save(); this.changed()
+  }
+
+  async cancelCleanup(id: string): Promise<void> {
+    if (this.fatalError || this.stopped) throw new Error(this.fatalError || '客户端已停止')
+    const root = this.store.data.watches.find(w => w.id === id)
+    if (root?.mode !== 'once' || !root.cleanup || !root.batch || root.batch.deletedAt) throw new Error('此任务没有待取消的目录清理')
+    root.cleanup.enabled = false
+    delete root.batch.deleteAt
     this.store.save(); this.changed()
   }
 

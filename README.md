@@ -1,6 +1,6 @@
 # PlutoFish Watch
 
-独立的可视化目录监控客户端。每个监控任务可添加多个本地根目录，数量不限，共用一个 PlutoFish 作品、季（剧集）和网盘目标，版本可自动归类或固定选择；发现本地新视频后，等待文件稳定，再通过 PlutoFish 完成上传、核验和资源登记。
+独立的可视化目录监控客户端。每个监控任务可添加多个本地根目录，数量不限，共用一个 PlutoFish 作品、季（剧集）和网盘目标，版本可自动归类或固定选择；发现本地新视频后，等待文件稳定，再通过 PlutoFish 完成上传和资源登记。
 
 0.1.8 修复上传失败后原任务重试：已失效且未提交合并的分片会话可恢复，补传后按顺序合并；任务显示具体失败阶段、HTTP 状态、错误码及请求 ID。无需移走再移回文件。合并结果未知时继续核验原文件。
 
@@ -131,7 +131,7 @@ Windows 包面向 Intel/AMD 64 位系统（x64）；当前 Electron 运行时不
 - 暂停目录会停止该目录的发现与上传，恢复后补扫；“暂停上传”保留目录发现。网络恢复不会解除目录暂停、全局上传暂停或手动任务暂停，已取消任务不会复活。
 - 0.1.7 按 PlutoFish 已就绪集号补传首次忽略的历史集，并同步 GVS 发布引擎的版本继承与响应校验。Windows x64 安装包重新构建；仍需在目标设备验证安装和运行。
 - 0.1.3 补齐目录编辑与恢复边界：延长稳定等待会重新检查未登记文件；暂停任务修改季号后可继续进入集号确认，已登记任务不能改集号。异常退出时本地取消／失败决定优先于旧上传进度；启动检测不再重复验证用户刚完成的连接。侧栏显示实际版本号，沿用编辑前配置的任务显示原作品与上传目标。
-- 未完成发布保存分片检查点，恢复前重新检查本地文件。完成回执未知时沿用现有引擎核验原任务；不会直接重新上传整份文件。
+- 未完成发布保存分片检查点，恢复前重新检查本地文件。续传保留原 pick_code，上传地址、bucket、object 和回调采用 115 本次响应；用新路由核对已有分片，明确会话失效后按新参数重建，网络和授权错误不清除断点。完成回执未知时沿用现有引擎核验原任务；不会直接重新上传整份文件。
 - 重试沿用原任务、作品、版本与文件。未提交合并且存储服务明确返回 `NoSuchUpload` 时，在原上传目标内重建失效分片会话，无需移动文件；普通断网、权限错误或合并结果未知时保留断点。补传中间缺片后按编号排序再提交合并。
 - 上传错误显示具体阶段、可识别原因、HTTP 状态、错误码及请求 ID（服务端提供时），并保留到重启后；自动重试耗尽也不会覆盖原失败原因。原始响应正文、访问地址和临时凭据不进入错误详情。旧版失败任务需重试一次才能获取新详情。
 - 0.1.9 将每次失败作为独立记录保存并补报；服务端声明 `taskDiagnostics` 能力后，在后台“发布任务 → 任务详情 → 失败历史”查看、分页和复制诊断。成功重试不清空历史，补报失败不阻塞上传，待补记录不随清单清理删除。旧服务端继续使用原上报格式。
@@ -140,22 +140,32 @@ Windows 包面向 Intel/AMD 64 位系统（x64）；当前 Electron 运行时不
 - 上传复用 HTTPS 连接，在当前分片发送时预读下一片并计算 MD5。SHA1 在同一进程内按路径、大小、修改时间、变更时间、inode 和设备身份复用，文件变化或重启后重新校验；分片顺序、远端回执和原上传标识保持不变。
 - 新上传任务默认每片 16 MiB；大文件自动增大分片，确保不超过 10,000 片。已有断点任务继续使用原分片大小。
 - 两路任务共用同一 115 用户的发送预算，一个任务完成后另一个可使用空闲额度；同一账号在另一个客户端进程上传时会排队。仅在连接响应 `publisher/me.capabilities.uploadClientGrouping=true` 时启用双路并发送 `clientId`；旧服务端未声明支持时自动使用单文件兼容模式并提示，其他文件仍会提前准备。每次连接或后台重验刷新能力，正在上传的请求保持原协议，全部结束后再切换；未知的新能力忽略，普通 422 不会触发删字段重试。旧客户端仍可连接新服务端；此功能不新增数据库迁移。
-- 默认保留本地原文件。启用自动清理后，从上传完成时间起算保留天数；完成回执已确认、ED2K 已生成且服务端已确认保存后，才允许删除。开启或缩短天数也会作用于已完成文件，已到期文件在下次清理时处理。关闭或延长天数对尚未删除的文件立即生效，重启不会重置计时。
+- 持续监控默认保留本地原文件。启用监控自动清理后，从上传完成时间起算保留天数；完成回执已确认、ED2K 已生成且服务端已确认保存后，才允许删除。开启或缩短天数也会作用于已完成文件，已到期文件在下次清理时处理。关闭或延长天数对尚未删除的文件立即生效，重启不会重置计时。
 - 自动清理复用下载器引擎：每分钟检查到期任务，删除前确认原文件身份，跳过被替换的文件、符号链接、仍在读取的文件和不属于有效监控目录的任务。暂停目录、暂停上传、移除监控或断开连接时暂缓自动删除。仅删除对应视频，不清空文件夹、字幕、NFO 或网盘内容；本地重复副本若只被标记为“重复已跳过”，不会自动删除。
 - 清理后保留任务历史与 ED2K 链接，界面显示“本地文件已清理”。通过 `range-proofs/forget` 通知服务端撤销该文件的本地片段校验资格；通知失败保留发布清单，网络恢复或重启后补发。
 - 关闭窗口保留托盘监控，退出应用停止任务。第一版不注册系统服务或开机自启动；电脑休眠、应用退出期间靠下次启动补扫。
+
+## 一次性上传
+
+在侧栏选择「一次性上传 → 选择目录上传」，选择一个包含视频的本地目录。识别与确认作品、季、版本和网盘目标的流程与监控目录一致；点击「开始一次性上传」后固定本次视频清单，复用稳定等待、媒体探测、上传、去重、重试及 ED2K 制作与同步流程。不会持续发现后续新增文件；任务和进度会保存，退出后下次启动继续。
+
+确认作品后可勾选「完成后自动删除这个文件夹」，默认关闭，保留天数默认 **1 天**，可填 1–365 天。从本批全部视频上传成功、完成状态及 ED2K 均得到服务端确认时开始按连续 24 小时计时，重启不重新计时。此设置独立于监控目录的全局文件清理策略。列表显示预计删除时间，支持「取消删除」；暂停任务或暂停上传时也暂停清理。
+
+到期删除的是整个所选本地文件夹，包括字幕、封面、隐藏附属文件和子目录。创建时记录完整目录清单，删除前重新核对；发现新增、修改、替换或缺失内容时停止自动删除，并在列表显示原因。开启整目录删除时拒绝链接、跨设备挂载和特殊文件；正在执行本地片段校验的文件暂缓清理。实际执行逐文件删除及空目录移除，不递归删除未记录内容。不会删除网盘文件。
+
+清理结果和倒计时持久化；删除完成后保留上传历史及 ED2K，并通过共享引擎通知服务端撤销本地校验资格。通知中断可在恢复连接或重启后补办。任务的目录和发布绑定固定，需要更换时移除任务后重新创建；移除任务会取消未完成上传和清理计划，保留已有文件及历史。
 
 ## 数据与服务契约
 
 运行数据存储在 Electron 的独立 `userData` 目录：macOS 默认 `~/Library/Application Support/PlutoFish Watch/`。包含：
 
-- `watch-state.json`：目录绑定、扫描基线、文件任务、暂停状态与本地文件保留策略。
+- `watch-state.json`：目录绑定、扫描基线、文件任务、暂停状态、本地文件保留策略与一次性批次清单及删除进度。
 - `connection.json`：服务地址与系统密钥环加密的发布端凭据。Linux 无可用密钥环时拒绝明文保存。
 - `publications/`：独立的上传检查点、进度快照、ED2K 与片段校验清单。
 
 这些文件不进入 Git。数据解析或落盘失败时停止处理，不以空队列覆盖损坏记录。`--watch-data=/绝对路径` 可为本地验收指定隔离数据目录。
 
-客户端使用 `publisher/me`、`publisher/tmdb/search`、`publisher/releases/query`、`publisher/directories`、`publisher/directories/create`、`publisher/tasks/report`、`publisher/uploads/prepare`、`publisher/files/check`、`publisher/files/report`、`publisher/files/ed2k` 和 `publisher/range-proofs/*`。上传通过现有临时 OSS 凭据直传，PlutoFish 负责鉴权、目标账号与上传调度、核验和目录登记。
+客户端使用 `publisher/me`、`publisher/tmdb/search`、`publisher/releases/query`、`publisher/directories`、`publisher/directories/create`、`publisher/tasks/report`、`publisher/uploads/prepare`、`publisher/files/check`、`publisher/files/report`、`publisher/files/ed2k` 和 `publisher/range-proofs/*`。上传通过现有临时 OSS 凭据直传，PlutoFish 负责鉴权、目标账号与上传调度、成功回执保存和资源登记。115 秒传成功或 OSS 合并成功后直接登记就绪，不额外查询网盘文件大小、SHA1 或身份；未返回的文件定位留空。成功回执落盘后，登记失败只重放 `complete`，无需重新上传或核验。未知结果恢复及上传前历史文件复用仍按原任务核对。服务端需配套更新以支持 `complete`。
 
 片名搜索要求服务端支持 `publisher/tmdb/search`，并在 PlutoFish 后台配置 `tmdb.apiKey`。TMDB 密钥留在服务端；搜索只读资料，不访问网盘或创建作品。旧服务端会提示更新，仍可手填 ID。
 
@@ -189,6 +199,7 @@ env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui
 env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui-retry-smoke.cjs
 env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui-connection-smoke.cjs
 env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui-retention-smoke.cjs
+env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui-one-time-smoke.cjs
 env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui-edit-smoke.cjs
 env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui-directory-create-smoke.cjs
 ```

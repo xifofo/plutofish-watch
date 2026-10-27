@@ -9,14 +9,14 @@ const dirty = computed(() => draft.enabled !== props.settings.enabled || draft.d
 </script>
 <template>
   <section class="panel settings-panel retention-settings">
-    <h2>本地文件</h2>
+    <h2>监控目录的本地文件</h2>
     <form @submit.prevent="emit('save', { ...draft })">
       <fieldset :disabled="busy">
         <div class="preference"><div><strong id="retention-label">自动删除本地文件</strong><p>{{ settings.enabled ? `已开启 · 上传完成满 ${settings.days} 天后清理` : '未开启 · 保留原文件' }}</p></div>
           <button type="button" class="retention-switch" role="switch" aria-labelledby="retention-label" :aria-checked="draft.enabled" @click="draft.enabled = !draft.enabled"><span /></button>
         </div>
         <label class="retention-days">上传完成后保留 <input v-model.number="draft.days" type="number" min="1" max="365" step="1" required :disabled="!draft.enabled" aria-label="保留天数" /> 天</label>
-        <p class="hint">ED2K 已生成并同步后才删除。开启后也适用于已完成文件。</p>
+        <p class="hint">ED2K 已生成并同步后才删除。开启后也适用于已完成的监控文件。一次性上传使用创建任务时的独立设置。</p>
         <div class="form-footer"><span class="hint">{{ dirty ? '有未保存的更改' : '设置已保存' }}</span><button type="submit" class="button secondary" :disabled="busy || !dirty">保存清理设置</button></div>
       </fieldset>
     </form>

@@ -25,6 +25,9 @@ export type WorkPage = { items: WorkOption[]; page: number; totalPages: number; 
 /** episodes：已就绪正片的集号（新版服务端返回），历史文件据此只补版本里缺的集。 */
 export type Release = { id: string; name: string; resolution: string; dynamicRange: string; status: string; latestEpisode?: number; episodes?: number[] }
 export type WatchInput = {
+  /** 省略时为持续监控；一次性任务只处理创建时的文件清单。 */
+  mode?: 'watch' | 'once'
+  cleanup?: LocalRetentionSettings
   path: string; title: string; sourceAccountId: string; work: Work; seasonNumber?: number
   /** 与首个目录共用发布配置；旧记录省略时仍为单目录，不限制目录数量。 */
   additionalPaths?: string[]
@@ -41,6 +44,7 @@ export type DirectoryCreation = {
   parentId: string; parentPath: string; directoryId: string; directoryPath: string; workDirectoryId: string; workDirectoryPath: string
 }
 export type WatchRoot = WatchInput & {
+  batch?: OneTimeBatch
   id: string; binding: Binding; releaseName: string; releaseVersion?: { name: string; resolution: string; dynamicRange: string }; enabled: boolean
   initialized: boolean; createdAt: string; lastScan?: string; error?: string
   /** 每个本地目录分别保存首次扫描基线；旧记录从 initialized 继承。 */
@@ -49,6 +53,11 @@ export type WatchRoot = WatchInput & {
   progressAt?: number
 }
 export type Signature = { size: number; mtimeMs: number; ctimeMs: number; ino: number; dev: number }
+export type FolderEntry = { path: string; kind: 'file' | 'directory'; signature: Signature; birthtimeMs: number }
+export type OneTimeBatch = {
+  files: string[]; entries?: FolderEntry[]
+  completedAt?: number; deleteAt?: number; deletingAt?: number; deletedAt?: number; cleanupError?: string
+}
 export type Observation = {
   signature: Signature; stableSince: number; jobId?: string; ignored?: boolean
 }
@@ -111,6 +120,7 @@ export interface WatchAPI {
   updateWatch(input: { id: string; watch: WatchInput }): Promise<void>
   setSourcePreset(input: { id: string; source: ReleaseSource }): Promise<void>
   setRetention(input: LocalRetentionSettings): Promise<void>
+  cancelCleanup(id: string): Promise<void>
   toggleWatch(id: string): Promise<void>
   removeWatch(id: string): Promise<void>
   scan(): Promise<void>

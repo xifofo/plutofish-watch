@@ -74,9 +74,11 @@ else {
             case 'updateWatch': await svc.updateWatch(payload); break
             case 'setSourcePreset': await svc.setSourcePreset(payload); break
             case 'setRetention': await svc.setRetention(payload); break
+            case 'cancelCleanup': await svc.cancelCleanup(payload); break
             case 'toggleWatch': await svc.toggleWatch(payload); break
             case 'removeWatch': {
-              const result = await dialog.showMessageBox(currentWindow, { type: 'question', message: '移除这个监控任务？', detail: '停止此任务下所有本地目录的监控和未完成任务，保留本地文件、网盘文件和任务历史。', buttons: ['保留', '移除监控'], cancelId: 0, defaultId: 0 })
+              const once = svc.store.data.watches.find(w => w.id === payload)?.mode === 'once'
+              const result = await dialog.showMessageBox(currentWindow, { type: 'question', message: once ? '移除这个一次性上传任务？' : '移除这个监控任务？', detail: '停止此目录任务及自动清理，保留本地文件、网盘文件和传输历史。', buttons: ['保留', '移除任务'], cancelId: 0, defaultId: 0 })
               if (result.response === 1) await svc.removeWatch(payload)
               break
             }
@@ -90,7 +92,7 @@ else {
               shell.showItemInFolder(job.path); break
             }
             case 'chooseDirectory': {
-              const result = await dialog.showOpenDialog(currentWindow, { title: '选择监控目录', properties: ['openDirectory'] })
+              const result = await dialog.showOpenDialog(currentWindow, { title: '选择本地目录', properties: ['openDirectory'] })
               value = result.canceled ? null : result.filePaths[0]; break
             }
             case 'chooseProbe': {

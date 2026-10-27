@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { WatchJob, WatchAPI, ReleaseSource, LocalRetentionSettings } from '../../shared/model'
+import type { WatchJob, WatchRoot, WatchAPI, ReleaseSource, LocalRetentionSettings } from '../../shared/model'
 import Icon from './Icon.vue'
 import SourceFields from './SourceFields.vue'
 import { uploadBytes, uploadRemaining } from '../../../vendor/publisher/src/integrations/plutofish/upload-display'
 import transferTrayArt from './assets/transfer-tray.png'
-const props = defineProps<{ jobs: WatchJob[]; retention: LocalRetentionSettings; busy: boolean; compact?: boolean }>()
+const props = defineProps<{ jobs: WatchJob[]; watches?: WatchRoot[]; retention: LocalRetentionSettings; busy: boolean; compact?: boolean }>()
 const emit = defineEmits<{ action: [input: Parameters<WatchAPI['job']>[0]]; reveal: [id: string] }>()
 const filter = ref('all'), search = ref(''), page = ref(1), episode = ref<Record<string, string | number>>({})
 const sources = ref<Record<string, ReleaseSource>>({})
@@ -24,6 +24,14 @@ const ed2kLabel = (j: WatchJob) => j.ed2k?.state === 'running' ? `ED2K ${Math.fl
   : j.ed2k?.state === 'failed' ? 'ED2K 待重试' : 'ED2K 排队中'
 function retentionLabel(job: WatchJob): string {
   if (job.retention?.state === 'deleted') return '本地文件已清理'
+  const root = props.watches?.find(w => w.id === job.watchId) ?? job.watchSnapshot
+  if (root?.mode === 'once') {
+    if (root.batch?.deletedAt) return '本地文件夹已清理'
+    if (!root.cleanup?.enabled) return '一次性上传 · 保留本地目录'
+    if (root.batch?.cleanupError) return root.batch.cleanupError
+    if (root.batch?.deleteAt) return `预计 ${new Date(root.batch.deleteAt).toLocaleString('zh-CN')} 清理整个文件夹`
+    return '等待整批上传与 ED2K 同步后开始保留计时'
+  }
   if (!props.retention.enabled || job.status !== 'completed') return ''
   if (job.changed || job.retention?.state === 'changed') return '文件已改变，保留本地文件'
   if (!job.ed2kSaved) return '等待 ED2K 同步，保留本地文件'
