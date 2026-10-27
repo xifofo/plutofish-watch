@@ -1052,3 +1052,28 @@ test('115 普通核验拒绝持久化具体原因并停止自动重试', async (
   expect(saved.error).not.toContain('PRIVATE')
   expect(f.calls.find(c => c.path === 'tasks/report' && c.body.stage === 'failed')?.body.errorDetails).toBeUndefined()
 })
+
+for (const cleanup of [false, true]) test(`一次性发布完成并同步 ED2K，独立目录清理 enabled=${cleanup}`, async () => {
+  let now = Date.now()
+  const f = await setup({ retry: { now: () => now } })
+  const { createOneTimeBatch } = await import('../src/main/one-time')
+  await writeFile(join(f.root.path, 'poster.nfo'), 'sidecar')
+  f.root.mode = 'once'; f.root.cleanup = { enabled: cleanup, days: 3 }
+  f.root.batch = await createOneTimeBatch(f.root.path, f.root.cleanup)
+  f.store.data.retention = { enabled: true, days: 1 }; f.store.save()
+  await until(f.publisher, () => f.root.batch!.completedAt !== undefined)
+  expect(f.job.ed2kSaved).toBe(true); expect(f.job.ed2k?.state).toBe('done')
+  expect(f.job.synced).toBe(true)
+  now += 2 * 24 * 3600_000; await f.publisher.tick()
+  expect(existsSync(f.file)).toBe(true) // 全局一天清理不能删除一次性文件。
+  const due = f.root.batch!.deleteAt
+  expect(due).toBe(cleanup ? f.root.batch!.completedAt! + 3 * 24 * 3600_000 : undefined)
+  now += 2 * 24 * 3600_000; await f.publisher.tick()
+  expect(existsSync(f.root.path)).toBe(!cleanup)
+  if (cleanup) {
+    now += 60_001
+    await until(f.publisher, () => f.calls.some(c => c.path === 'range-proofs/forget'))
+    expect(f.job.retention?.state).toBe('deleted')
+    expect(f.job.status).toBe('completed'); expect(f.job.ed2k!.link).toContain('ed2k:')
+  }
+})

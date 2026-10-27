@@ -6,11 +6,14 @@ export type Dispatch = {
 }
 export type Credentials = { accessKeyId: string; accessKeySecret: string; securityToken: string; expiration: string; endpoint: string; rate: number; rateScope?: string }
 export type UploadReply = { dispatch: Dispatch; credentials?: Credentials }
+/** 仅在收到 115 成功回调后保存；任务标识与实际文件定位分开，缺失定位留空。 */
+export type UploadCompletion = { pickCode: string; fileId?: string; filePickCode?: string }
 export type UploadCheckpoint = {
   file: { size: number; mtimeMs: number; sha1: string; preId: string; ctimeMs?: number; ino?: number; dev?: number }
   uploadId?: string; object?: string; bucket?: string; endpoint?: string; pickCode?: string
   partSize: number; parts: Array<{ number: number; etag: string; size: number }>
   sequential?: boolean; previousUploadId?: string
   completing?: boolean
+  completion?: UploadCompletion
   resource?: { fileId: string; pickCode: string; preId: string }
 }

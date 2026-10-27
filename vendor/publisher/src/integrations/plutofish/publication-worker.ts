@@ -119,6 +119,22 @@ export class PublicationWorker {
     return [...this.states.values()].filter(s => s.draft.output).map(s => structuredClone(s.draft))
   }
 
+  /** 宿主已持久化并确认本机文件删除（包括父目录）后调用；重启可重复提交以补办撤销资格。 */
+  localFilesDeleted(keys: string[]): void {
+    if (this.closed) return
+    this.load()
+    for (const key of keys) {
+      const state = this.states.get(key)
+      if (!state || state.snapshot.stage !== 'completed' || state.acknowledged < state.snapshot.sequence || !state.checkpoint?.resource) continue
+      if (state.retention?.deletedAt === undefined) {
+        state.retention ??= {}
+        state.retention.retiring = true
+        this.retention.deleted(state)
+      }
+      this.cleanup.missing(state)
+    }
+  }
+
   private publish(state: PublicationState, error = '', transient = false): void {
     const p = state.snapshot
     const syncError = this.syncErrors.get(state.draft.fileKey)
@@ -330,16 +346,16 @@ export class PublicationWorker {
       this.update(state, { attempt: state.snapshot.attempt + 1, stage: 'uploading', downloadPercent: 100, sizeBytes: file.size, errorMessage: '' })
       this.phase(state, 'uploading')
       const rememberReady = (dispatch: UploadReply['dispatch']) => {
-        if (dispatch.status !== 'ready') throw new PublisherError('115 文件仍待核验', true)
-        if (!dispatch.fileId || !dispatch.pickCode) throw new Error('115 文件核验响应无效')
-        cp.resource = { fileId: dispatch.fileId, pickCode: dispatch.filePickCode || dispatch.pickCode, preId: file.preId }
+        if (dispatch.status !== 'ready') throw new PublisherError('115 文件仍待确认完成', true)
+        cp.resource = { fileId: dispatch.fileId || '', pickCode: dispatch.filePickCode || '', preId: file.preId }
         this.store.save(state)
       }
       const ready = async () => { rememberReady((await request('verify')).dispatch) }
-      if (!cp.resource) {
+      if (!cp.resource && !cp.completion) {
         // Complete 响应丢失或进程退出时，先查 115 文件身份，禁止盲目重传完整文件。
         let recoverLegacyUpload = false
         if (cp.completing) {
+          this.phase(state, 'verifying')
           try { await ready() } catch (error) {
             signal.throwIfAborted()
             const notReady = error instanceof Error && ['115 文件尚未就绪，请重试原任务完成核验', '115 文件仍待核验'].includes(error.message)
@@ -376,8 +392,11 @@ export class PublicationWorker {
           }
         }
       }
-      this.phase(state, 'verifying')
-      if (!cp.resource) await ready()
+      if (!cp.resource) {
+        if (!cp.completion) throw new Error('尚未收到 115 上传成功回执')
+        this.phase(state, 'reporting')
+        rememberReady((await request('complete', { completion: cp.completion })).dispatch)
+      }
       signal.throwIfAborted()
       const version = publicationVersion(draft)
       this.phase(state, 'reporting')

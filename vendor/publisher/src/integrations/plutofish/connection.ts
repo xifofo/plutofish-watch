@@ -105,7 +105,7 @@ export class PlutoFishConnection {
   async request<T>(binding: PublicationDraft['binding'], path: 'tmdb/recognize' | 'tmdb/search' | 'releases/query' | 'tasks/report' | 'uploads/prepare' | 'files/check' | 'files/report' | 'files/ed2k' | 'directories' | 'directories/create' | 'range-proofs/pending' | 'range-proofs/report' | 'range-proofs/forget', body: unknown, signal?: AbortSignal): Promise<T> {
     this.assertBinding(binding)
     const key = this.saved.key
-    const uploadActions: Record<string, string> = { start: '申请上传', credentials: '获取上传凭据', verify: '核验网盘文件', heartbeat: '续期上传租约', release: '释放上传名额' }
+    const uploadActions: Record<string, string> = { start: '申请上传', complete: '保存上传回执', credentials: '获取上传凭据', verify: '核验网盘文件', heartbeat: '续期上传租约', release: '释放上传名额' }
     const stage = path === 'uploads/prepare' ? uploadActions[String((body as { action?: unknown })?.action)] ?? '上传调度'
       : ({ 'tasks/report': '同步任务状态', 'files/report': '登记资源', 'files/check': '检查重复文件', 'files/ed2k': '同步 ED2K' } as Record<string, string>)[path] ?? path
     const requestSignal = AbortSignal.any([this.requestAbort.signal, ...(signal ? [signal] : [])])
@@ -129,7 +129,7 @@ export class PlutoFishConnection {
     if (key !== this.saved.key) throw new Error('发布端密钥已变化，请重试')
     if (!response.ok) {
       const failure = await response.json().catch(() => null) as { error?: { code?: string; fieldErrors?: Record<string, unknown> } } | null
-      const diagnostic = httpFailureDetails(path === 'uploads/prepare' ? ({ prepare: '申请上传', verify: '核验网盘文件', verify_reuse: '核验历史文件', credentials: '获取上传凭据', token_refresh: '刷新网盘授权' } as Record<string, string>)[response.headers.get('x-plutofish-upload-stage') ?? ''] ?? stage : stage, response, failure?.error?.code)
+      const diagnostic = httpFailureDetails(path === 'uploads/prepare' ? ({ prepare: '申请上传', complete: '保存上传回执', verify: '核验网盘文件', verify_reuse: '核验历史文件', credentials: '获取上传凭据', token_refresh: '刷新网盘授权' } as Record<string, string>)[response.headers.get('x-plutofish-upload-stage') ?? ''] ?? stage : stage, response, failure?.error?.code)
       requestSignal.throwIfAborted()
       if (response.status === 422 && path !== 'tmdb/search' && path !== 'tmdb/recognize') {
         // 只展示固定字段名和业务提示，绝不把服务端正文、字段值或供应商凭据带入界面。

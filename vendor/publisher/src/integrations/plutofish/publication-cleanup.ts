@@ -38,6 +38,8 @@ export class PublicationCleanup {
       const state = states.get(key)
       if (!state || !completed(state)) continue
       try { this.connection.assertBinding(state.draft.binding) } catch { continue }
+      // 清理引擎或宿主已记录的删除事实不依赖父目录仍存在；同路径新文件也不能恢复旧成品资格。
+      if (state.retention?.deletedAt !== undefined) { missing.push(state); continue }
       try { await stat(state.draft.output) }
       catch (error) {
         // 权限错误、I/O 故障和挂载目录消失不能证明用户删了文件，留待下一轮复查。

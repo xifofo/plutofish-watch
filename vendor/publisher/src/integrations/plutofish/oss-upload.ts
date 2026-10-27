@@ -5,6 +5,7 @@ import OSS from 'ali-oss'
 import { Agent } from 'node:https'
 import { createHash } from 'node:crypto'
 import { fileRange } from './upload-file.ts'
+import { uploadCompletion } from './upload-receipt.ts'
 import { UploadBudget, UploadMeter, uploadStream, type UploadTransfer } from './upload-traffic.ts'
 import type { Readable } from 'node:stream'
 import type { Credentials, Dispatch, UploadCheckpoint } from './upload-types.ts'
@@ -66,10 +67,13 @@ export async function uploadParts(options: {
 }): Promise<void> {
   const { path, dispatch, checkpoint: cp, signal, save, progress } = options
   if (!dispatch.object || !dispatch.bucket || !dispatch.pickCode || !dispatch.callback) throw new Error('115 上传调度信息不完整')
-  if (cp.uploadId && (cp.object !== dispatch.object || cp.bucket !== dispatch.bucket || cp.pickCode !== dispatch.pickCode)) throw new Error('115 续传对象变化，请保留断点并核对原任务')
-  // 续传采用当前调度地址；原对象、bucket 和 uploadId 仍必须保持一致。
+  if ((cp.uploadId || cp.pickCode) && cp.pickCode !== dispatch.pickCode) throw new Error('115 续传任务标识变化，请保留断点并核对原任务')
+  // 续传以本次调度的 bucket/object/endpoint/回调为准，用新路由核对原 uploadId 的分片。
   const route = { ...dispatch }
   cp.endpoint = dispatch.endpoint
+  const rememberRoute = () => {
+    cp.object = dispatch.object; cp.bucket = dispatch.bucket; cp.pickCode = dispatch.pickCode; cp.endpoint = route.endpoint
+  }
   const count = Math.ceil(cp.file.size / cp.partSize)
   if (!Number.isSafeInteger(cp.partSize) || count < 1 || count > 10000 || cp.partSize < 100 * 1024 || cp.partSize > 128 * 1024 * 1024) throw new Error('文件超过当前分片上传大小范围')
   let session: ReturnType<OSSFactory> | undefined, token: Credentials | undefined
@@ -103,7 +107,7 @@ export async function uploadParts(options: {
     if (!result.uploadId) throw new Error('115 未返回分片上传标识')
     cp.uploadId = result.uploadId
     cp.sequential = true; cp.completing = false
-    cp.object = dispatch.object; cp.bucket = dispatch.bucket; cp.pickCode = dispatch.pickCode; cp.endpoint = route.endpoint
+    rememberRoute()
     save()
   }
   try {
@@ -121,13 +125,14 @@ export async function uploadParts(options: {
         if (cp.sequential && cp.completing && (error as { code?: string })?.code === 'NoSuchUpload') {
           throw new PublisherError('115 合并结果仍待核验，请重试原任务核验', true, undefined, failureDetails(error, '核对合并结果'))
         }
-        // 从未提交合并且 OSS 明确声明会话不存在，可以在原目标内重建分片会话。
+        // 从未提交合并且 OSS 明确声明会话不存在，按本次续传参数重建分片会话。
         // 已提交合并只允许原有旧版迁移；普通断网、403 和结果不明均保留断点。
         signal.throwIfAborted()
         const legacy = marker === 0 && options.recoverLegacyUpload && !cp.sequential && cp.completing
         if ((cp.completing && !legacy) || (error as { code?: string })?.code !== 'NoSuchUpload') throw ossFailure(error, '核对续传分片')
         cp.previousUploadId = cp.uploadId
         cp.uploadId = undefined; cp.parts = []; cp.completing = false
+        rememberRoute()
         save(); progress(0)
         await initialize()
         break
@@ -147,6 +152,8 @@ export async function uploadParts(options: {
       confirmed.add(p.number)
       return true
     })
+    // 只有新路由确认的分片可保留；将本次路由与筛选后的回执一起保存，重启继续原任务。
+    rememberRoute()
     save()
     uploaded = cp.parts.reduce((sum, p) => sum + p.size, 0)
     progress(uploaded)
@@ -192,6 +199,10 @@ export async function uploadParts(options: {
       .catch(error => { throw ossFailure(error, '合并上传分片') })
     const reply = (result as OSS.CompleteMultipartUploadResult & { data?: { state?: unknown } }).data
     if (reply?.state !== true && reply?.state !== 1) throw new PublisherError('115 合并回调未确认成功，请重试原任务核验', true, undefined, { stage: '核对合并回调', code: 'CALLBACK_UNCONFIRMED' })
+    // 成功回调先持久化；资源登记断网或重启后只重放完成回执，不再查网盘或重复上传。
+    cp.completion = uploadCompletion(dispatch.pickCode, reply)
+    cp.completing = false
+    save()
   } finally {
     if (meterTimer) clearInterval(meterTimer)
     prefetchAbort.abort()
