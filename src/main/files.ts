@@ -86,13 +86,25 @@ export async function scanTree(root: string, signal?: AbortSignal): Promise<Map<
   return files
 }
 
+/** Windows 和 macOS 路径使用同一规则；只接受明确季号，不把年份、分辨率当季。 */
+export function seasonFromName(path: string): { seasonNumber?: number; conflict?: boolean } {
+  const parts = path.split(/[\\/]/), file = parts.pop() ?? '', seasons = new Set<number>()
+  for (const folder of parts) {
+    const match = /^(?:season\s*|s)(\d{1,4})$|^第\s*(\d{1,4})\s*季$/i.exec(folder)
+    if (match) seasons.add(Number(match[1] ?? match[2]))
+  }
+  for (const match of file.matchAll(/(?:^|[^a-z0-9])S(\d{1,4})(?=E\d|[^a-z0-9]|$)|第\s*(\d{1,4})\s*季/gi)) {
+    seasons.add(Number(match[1] ?? match[2]))
+  }
+  return seasons.size > 1 ? { conflict: true } : { seasonNumber: [...seasons][0] }
+}
+
 /** 不猜纯数字标题；多集文件或季号不符必须人工确认。 */
 export function episodeFromName(path: string, season: number): number | undefined {
-  for (const folder of dirname(path).split(/[\\/]/)) {
-    const match = /^(?:season\s*|s)(\d{1,4})$|^第\s*(\d{1,4})\s*季$/i.exec(folder)
-    if (match && Number(match[1] ?? match[2]) !== season) return
-  }
-  const name = basename(path, extname(path))
+  const detected = seasonFromName(path)
+  if (detected.conflict || (detected.seasonNumber !== undefined && detected.seasonNumber !== season)) return
+  const file = path.split(/[\\/]/).at(-1) ?? ''
+  const name = file.slice(0, file.length - extname(file).length)
   const full = [...name.matchAll(/(?:^|[^a-z0-9])S(\d{1,4})E(\d{1,5})(?!\d)/gi)]
   if (full.length) {
     if (full.length !== 1 || Number(full[0][1]) !== season || /E\d+\s*(?:[-~]\s*(?:E)?\d+|E\d+)/i.test(name)) return

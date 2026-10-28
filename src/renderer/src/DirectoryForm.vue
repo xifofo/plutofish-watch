@@ -190,7 +190,7 @@ function submit() {
         <div v-if="once" class="file-selection-actions">
           <button type="button" class="button secondary" @click="chooseFiles"><Icon name="file" :size="17" />选择文件</button>
           <button v-if="form.selectedFiles" type="button" class="button secondary" @click="chooseDirectory(0)"><Icon name="folder" :size="17" />选择目录</button>
-          <span class="hint">可多选同一目录内的视频，所有文件共用同一作品和季。</span>
+          <span class="hint">可多选同一目录内的视频，所有文件属于同一作品，季号按文件名和目录自动识别。</span>
         </div>
         <div v-if="form.selectedFiles" class="selected-files" aria-label="本次上传文件">
           <p class="hint">已选择 {{ form.selectedFiles.length }} 个视频</p>
@@ -204,7 +204,7 @@ function submit() {
           </div>
         </div>
         <button v-if="!once" type="button" class="link add-local-directory" @click="localPaths.push('')"><Icon name="plus" :size="15" />添加本地目录</button>
-        <p v-if="localPaths.length > 1" class="hint multi-directory-hint">所有目录共用同一作品{{ form.work.mediaType === 'tv' ? '和季' : '' }}。<template v-if="!initial">按第一个目录识别。</template></p>
+        <p v-if="localPaths.length > 1" class="hint multi-directory-hint">所有目录共用同一作品，可包含不同季。<template v-if="!initial">按第一个目录识别作品。</template></p>
         <div class="form-grid"><label>文件稳定等待（秒）<input v-model.number="form.stableSeconds" type="number" min="10" max="3600" required /></label>
           <label v-if="!once" class="checkbox"><input v-model="form.includeExisting" type="checkbox" :disabled="!hasNewPaths" /><span>首次补传历史文件<small v-if="!hasNewPaths">原目录请在列表中点击“补传历史”</small><small v-else-if="initial">仅作用于新加入的目录</small></span></label></div>
       </section>
@@ -214,15 +214,17 @@ function submit() {
         <div class="form-grid">
           <label>资源分类<select v-model="form.work.category" required><option value="" disabled>请选择资源分类</option><option v-for="c in categories" :key="c.value" :value="c.value">{{ c.label }}</option></select></label>
           <label>作品类型<select v-model="form.work.mediaType"><option value="tv">剧集</option><option value="movie">电影</option></select></label>
-          <label v-if="form.work.mediaType === 'tv'">季号<input v-model.number="form.seasonNumber" type="number" min="0" max="10000" required /></label>
+          <label v-if="form.work.mediaType === 'tv'">默认季号<input v-model.number="form.seasonNumber" type="number" min="0" max="10000" required /></label>
           <label>上传源账号<select v-model="form.sourceAccountId" required><option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }} · {{ s.alias }}</option></select></label>
         </div>
+        <p v-if="form.work.mediaType === 'tv'" class="hint">按文件名或 S1、S2、Season 02 等目录识别各文件的季号；未标注季号时使用默认季。各季共用所选网盘上传目录。</p>
         <WorkPicker :key="pickerGeneration" v-model:title="form.title" v-model:tmdb-id="form.work.tmdbId" :media-type="form.work.mediaType" :source-account-id="form.sourceAccountId" @select="selectedWork" />
         <div class="version-mode"><label>版本归类<select v-model="form.versionMode" aria-label="版本归类"><option value="auto">自动归类</option><option value="fixed">固定版本</option></select></label></div>
         <details v-if="form.versionMode === 'auto'" class="help-details"><summary>目录来源预设</summary><SourceFields v-model="form.sourcePreset" /><p class="hint">仅补充文件名缺失的来源；网络片源需填写平台。</p></details>
         <div v-else class="input-action version-row"><label>固定版本<select v-model="form.releaseId" required><option value="" disabled>{{ queried ? '请选择已有版本' : '先查询作品的已有版本' }}</option><option v-for="r in choices" :key="r.id" :value="r.id">{{ r.name }}{{ r.latestEpisode !== undefined ? ` · 更新至 ${r.latestEpisode} 集` : '' }}</option></select></label>
           <button type="button" class="button secondary" :disabled="!form.work.tmdbId" @click="query">{{ loading ? '查询中…' : '查询版本' }}</button></div>
         <p v-if="queried && !choices.length && form.versionMode !== 'auto'" class="hint warning">暂无已有版本，可切换自动归类。</p>
+        <p v-if="form.work.mediaType === 'tv' && form.versionMode === 'fixed'" class="hint">固定版本用于默认季，其他季按各文件的媒体规格自动归类。</p>
       </section>
       <section class="panel form-section">
         <h2 class="section-heading">网盘目标</h2>

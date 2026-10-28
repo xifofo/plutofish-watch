@@ -2,7 +2,8 @@
 import { watch, type FSWatcher } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { relative } from 'node:path'
-import { episodeFromName, sameSignature, scanTree, within, requiredWatchPath, safeFile, canonicalRoot } from './files'
+import { sameSignature, scanTree, within, requiredWatchPath, safeFile, canonicalRoot } from './files'
+import { resolveJobEpisode } from './job-episode'
 import { initializedWatchPaths, watchPaths } from '../shared/watch-paths'
 import { WatchStore } from './store'
 import type { WatchJob, WatchRoot } from '../shared/model'
@@ -162,10 +163,13 @@ export class DirectoryWatcher {
       }
       if (previous.ignored || !previous.jobId) continue
       const job = jobs.get(previous.jobId)
-      if (!job || job.status !== 'waiting' || sig.size < 1 || timestamp - previous.stableSince < root.stableSeconds * 1000) continue
-      job.episodeNumber = root.work.mediaType === 'tv' ? job.episodeNumber ?? episodeFromName(relative(directory, path), root.seasonNumber!) : undefined
-      job.status = job.versionReview || (root.work.mediaType === 'tv' && job.episodeNumber === undefined) ? 'review' : 'queued'
-      job.error = job.versionReview?.reason || (job.status === 'review' ? '无法确定本季集号，请确认后入队' : '')
+      // 升级前因季号错配卡住的任务也可恢复；已确认、暂停及已开始发布的任务不自动重绑。
+      const retryEpisode = job?.status === 'review' && !job.versionReview && !job.release && !job.fileKey
+        && !job.manuallyPaused && !job.changed
+      if (!job || (job.status !== 'waiting' && !retryEpisode) || sig.size < 1 || timestamp - previous.stableSince < root.stableSeconds * 1000) continue
+      resolveJobEpisode(root, job)
+      job.status = job.seasonReview || job.versionReview || (root.work.mediaType === 'tv' && job.episodeNumber === undefined) ? 'review' : 'queued'
+      job.error = job.seasonReview || job.versionReview?.reason || (job.status === 'review' ? '无法确定集号，请确认后入队' : '')
       job.updatedAt = date
     }
     for (const [path, previous] of Object.entries(observations)) {

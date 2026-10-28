@@ -3,11 +3,17 @@ import { computed, ref } from 'vue'
 import type { WatchJob, WatchRoot, WatchAPI, ReleaseSource, LocalRetentionSettings } from '../../shared/model'
 import Icon from './Icon.vue'
 import SourceFields from './SourceFields.vue'
+import { jobTarget } from '../../shared/job-target'
 import { uploadBytes, uploadRemaining } from '../../../vendor/publisher/src/integrations/plutofish/upload-display'
 import transferTrayArt from './assets/transfer-tray.png'
 const props = defineProps<{ jobs: WatchJob[]; watches?: WatchRoot[]; retention: LocalRetentionSettings; busy: boolean; compact?: boolean }>()
 const emit = defineEmits<{ action: [input: Parameters<WatchAPI['job']>[0]]; reveal: [id: string] }>()
 const filter = ref('all'), search = ref(''), page = ref(1), episode = ref<Record<string, string | number>>({})
+const seasons = ref<Record<string, string | number>>({})
+const seasonFor = (job: WatchJob) => {
+  const root = props.watches?.find(w => w.id === job.watchId) ?? job.watchSnapshot
+  return root ? jobTarget(root, job).seasonNumber : job.seasonNumber
+}
 const sources = ref<Record<string, ReleaseSource>>({})
 const versions = ref<Record<string, string>>({})
 const labels: Record<string, string | number> = { waiting: '等待文件稳定', queued: '等待上传', preparing: '检测与校验', review: '待确认集号', processing: '准备上传', uploading: '上传中', paused: '已暂停', failed: '失败', completed: '已完成', duplicate: '重复已跳过', cancelled: '已取消' }
@@ -18,7 +24,7 @@ const filtered = computed(() => [...props.jobs].reverse().filter(j =>
 const visible = computed(() => filtered.value.slice(0, props.compact ? 6 : page.value * 40))
 const size = (n: number) => n >= 1073741824 ? `${(n / 1073741824).toFixed(2)} GB` : `${(n / 1048576).toFixed(1)} MB`
 const percent = (job: WatchJob) => Math.max(0, Math.min(100, job.transfer && job.signature.size > 0 ? job.transfer.sentBytes / job.signature.size * 100 : job.percent))
-const phase = (j: WatchJob) => j.status === 'failed' && j.retry?.nextAt ? '等待自动重试' : j.versionReview && j.status === 'review' ? (j.versionReview.sourceRequired ? '待确认来源' : '待确认版本') : j.reused && j.status === 'completed' ? '已复用' : ({ probing: '检测媒体规格', checking: '检查是否已上传', hashing: '计算文件校验', uploading: j.reused ? '复用已有文件' : '上传中', verifying: '核验网盘文件', reporting: '登记资源' })[j.phase ?? ''] || labels[j.status] || j.status
+const phase = (j: WatchJob) => j.status === 'failed' && j.retry?.nextAt ? '等待自动重试' : j.seasonReview && j.status === 'review' ? '待确认季集' : j.versionReview && j.status === 'review' ? (j.versionReview.sourceRequired ? '待确认来源' : '待确认版本') : j.reused && j.status === 'completed' ? '已复用' : ({ probing: '检测媒体规格', checking: '检查是否已上传', hashing: '计算文件校验', uploading: j.reused ? '复用已有文件' : '上传中', verifying: '核验网盘文件', reporting: '登记资源' })[j.phase ?? ''] || labels[j.status] || j.status
 const ed2kLabel = (j: WatchJob) => j.ed2k?.state === 'running' ? `ED2K ${Math.floor(j.ed2k.pct * 100)}%`
   : j.ed2k?.state === 'done' ? (j.ed2kSaved ? 'ED2K 已同步' : 'ED2K 待同步')
   : j.ed2k?.state === 'failed' ? 'ED2K 待重试' : 'ED2K 排队中'
@@ -55,7 +61,7 @@ function retentionLabel(job: WatchJob): string {
   <div v-else class="task-list">
     <article v-for="job in visible" :key="job.id" class="task">
       <div class="file-icon" :class="{ done: job.status === 'completed' }"><Icon :name="job.status === 'completed' ? 'check' : 'upload'" :size="19" /></div>
-      <div class="task-body"><div class="task-title" :title="job.path">{{ job.relativePath }}</div><div class="task-meta"><span>{{ size(job.signature.size) }}</span><span v-if="job.episodeNumber !== undefined">第 {{ job.episodeNumber }} 集</span><span>{{ new Date(job.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) }}</span></div>
+      <div class="task-body"><div class="task-title" :title="job.path">{{ job.relativePath }}</div><div class="task-meta"><span>{{ size(job.signature.size) }}</span><span v-if="seasonFor(job) !== undefined && !job.seasonReview">第 {{ seasonFor(job) }} 季<template v-if="job.episodeNumber !== undefined"> · 第 {{ job.episodeNumber }} 集</template></span><span>{{ new Date(job.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) }}</span></div>
         <p v-if="job.status === 'failed' && job.retry?.nextAt" class="hint">{{ new Date(job.retry.nextAt).toLocaleTimeString('zh-CN') }} 重试 · 第 {{ job.retry.attempt }} 次</p>
         <p v-else-if="job.status === 'failed' && job.retry && job.retry.attempt > 8" class="hint warning">自动重试已达上限，请处理下方原因后点击重试。</p>
         <p v-if="job.release" class="version-caption">{{ job.release.name }}</p>
@@ -86,7 +92,7 @@ function retentionLabel(job: WatchJob): string {
             <button class="link" :disabled="busy" @click="versions[job.id] = ''; emit('action', { id: job.id, action: 'refreshVersion' })">刷新版本</button>
           </div>
         </div>
-        <div v-else-if="job.status === 'review'" class="review-row"><input v-model="episode[job.id]" type="number" min="0" max="100000" placeholder="集号" :aria-label="`${job.relativePath} 的集号`" /><button class="button secondary small" :disabled="busy || !String(episode[job.id] ?? '').trim()" @click="emit('action', { id: job.id, action: 'confirm', episodeNumber: Number(episode[job.id]) })">确认入队</button></div>
+        <div v-else-if="job.status === 'review'" class="review-row"><input :value="seasons[job.id] ?? seasonFor(job)" type="number" min="0" max="10000" placeholder="季号" :aria-label="`${job.relativePath} 的季号`" @input="seasons[job.id] = ($event.target as HTMLInputElement).value" /><input v-model="episode[job.id]" type="number" min="0" max="100000" placeholder="集号" :aria-label="`${job.relativePath} 的集号`" /><button class="button secondary small" :disabled="busy || !String(episode[job.id] ?? '').trim() || !String(seasons[job.id] ?? seasonFor(job) ?? '').trim()" @click="emit('action', { id: job.id, action: 'confirm', seasonNumber: Number(seasons[job.id] ?? seasonFor(job)), episodeNumber: Number(episode[job.id]) })">确认入队</button></div>
       </div>
       <div class="task-end"><span v-if="job.synced === false" class="sync-label">待同步</span><span class="badge" :class="job.status">{{ phase(job) }}{{ job.status === 'uploading' ? ` ${percent(job).toFixed(1)}%` : '' }}</span>
         <div v-if="!compact" class="task-actions">
@@ -101,6 +107,7 @@ function retentionLabel(job: WatchJob): string {
   <button v-if="!compact && filtered.length > visible.length" class="button secondary load-more" @click="page++">加载更多（剩余 {{ filtered.length - visible.length }} 个）</button>
 </template>
 <style scoped>
+.review-row{flex-wrap:wrap}
 .transfer-stats{display:flex;flex-wrap:wrap;align-items:baseline;gap:5px 12px;margin-top:7px;font-size:10px;color:var(--secondary);font-variant-numeric:tabular-nums}
 .transfer-stats strong{color:var(--accent);font-size:11px}
 .account-limit{color:var(--muted)}

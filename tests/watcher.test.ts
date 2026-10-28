@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WatchStore } from '../src/main/store'
 import { DirectoryWatcher } from '../src/main/watcher'
-import { episodeFromName } from '../src/main/files'
+import { episodeFromName, seasonFromName } from '../src/main/files'
 import { applyWatchEdit } from '../src/main/watch-edit'
 import type { WatchRoot } from '../src/shared/model'
 
@@ -145,6 +145,71 @@ test('保守识别集号，季号错配与多集合并必须确认', () => {
   for (const name of ['S02E01.mp4', 'Season 2/E01.mp4', 'S01E02E03.mkv', 'S01E02-E04.mkv', 'E02E03.mp4', 'Title.2026.mp4']) {
     expect(episodeFromName(name, 1)).toBeUndefined()
   }
+})
+
+test('一次性总目录的 S1/S2 分别入队；旧季号待确认任务自动恢复，归属跨重启保留', async () => {
+  const f = await fixture()
+  const names = ['S1/Platonic.S01E05.mkv', 'Season 02/Platonic.S02E05.Jeopardy.2023.2160p.APP.WEB-DL.DV.HEVC.DDP.5.1.Atmos-Ftang.mkv', 'S2/E04.mkv', 'S0/第0集.mkv', 'E07.mp4']
+  for (const name of names) {
+    const path = join(f.rootPath, name)
+    await mkdir(join(path, '..'), { recursive: true }); await writeFile(path, name)
+  }
+  f.root.mode = 'once'; f.root.cleanup = { enabled: false, days: 1 }
+  f.root.batch = { files: names.map(name => join(f.rootPath, name)) }
+  await f.watcher.scan()
+  const old = f.store.data.jobs[1]
+  old.status = 'review'; old.error = '无法确定本季集号，请确认后入队'
+  f.advance(10001); await f.watcher.scan()
+  expect(f.store.data.jobs.map(j => [j.status, j.seasonNumber, j.episodeNumber])).toEqual([
+    ['queued', 1, 5], ['queued', 2, 5], ['queued', 2, 4], ['queued', 0, 0], ['queued', 1, 7],
+  ])
+  expect(old.error).toBe(''); expect(f.root.seasonNumber).toBe(1)
+  const restored = new WatchStore(f.store.path)
+  expect(restored.rootFor(restored.data.jobs[0])?.releaseId).toBe(f.root.releaseId)
+  expect(restored.rootFor(restored.data.jobs[1])).toMatchObject({ seasonNumber: 2, versionMode: 'auto', releaseId: '' })
+  expect(restored.rootFor(restored.data.jobs[3])?.seasonNumber).toBe(0)
+})
+
+test('季号冲突保留待确认；明确文件季号兼容 Windows 路径且不误认年份分辨率', async () => {
+  expect(seasonFromName('Season 02\\Platonic.S02E05.2023.2160p.mkv')).toEqual({ seasonNumber: 2 })
+  expect(episodeFromName('Season 02\\Platonic.S02E05.2023.2160p.mkv', 2)).toBe(5)
+  expect(seasonFromName('Title.2023.2160p.mkv').seasonNumber).toBeUndefined()
+  expect(seasonFromName('S1/Show.S02E05.mkv').conflict).toBe(true)
+  const f = await fixture()
+  await mkdir(join(f.rootPath, 'S1'))
+  await writeFile(join(f.rootPath, 'S1', 'Show.S02E05.mkv'), 'conflict')
+  await f.watcher.scan(); f.advance(10001); await f.watcher.scan()
+  expect(f.store.data.jobs[0].status).toBe('review')
+  expect(f.store.data.jobs[0].error).toContain('不同季号')
+  expect(f.store.data.jobs[0].fileKey).toBeUndefined()
+})
+
+test('直接选择 S2 目录也能识别短集号；已暂停和已登记的旧任务不自动恢复', async () => {
+  const f = await fixture()
+  f.root.path = join(f.rootPath, 'S2'); await mkdir(f.root.path)
+  for (const name of ['E01.mp4', 'E02.mp4', 'E03.mp4']) await writeFile(join(f.root.path, name), name)
+  await f.watcher.scan()
+  const [first, paused, registered] = ['E01.mp4', 'E02.mp4', 'E03.mp4'].map(name => f.store.data.jobs.find(j => j.relativePath === name)!)
+  paused.status = 'paused'; paused.manuallyPaused = true
+  registered.status = 'review'; registered.fileKey = 'old-registration'
+  f.advance(10001); await f.watcher.scan()
+  expect([first.seasonNumber, first.episodeNumber, first.status]).toEqual([2, 1, 'queued'])
+  expect(paused.status).toBe('paused'); expect(registered.status).toBe('review')
+})
+
+test('一次性选择单个电影文件不要求季集号，也清除未发布任务残留的剧集字段', async () => {
+  const f = await fixture()
+  f.root.work = { mediaType: 'movie', tmdbId: '456', category: 'movie' }
+  delete f.root.seasonNumber
+  const file = join(f.root.path, 'Movie.2023.1080p.NF.WEB-DL.mkv')
+  await writeFile(file, 'movie')
+  f.root.mode = 'once'; f.root.selectedFiles = [file]; f.root.cleanup = { enabled: false, days: 1 }; f.root.batch = { files: [file] }
+  await f.watcher.scan()
+  const job = f.store.data.jobs[0]
+  job.seasonNumber = 1; job.episodeNumber = 1; job.seasonReview = '旧剧集信息'
+  f.advance(10001); await f.watcher.scan()
+  expect(job.status).toBe('queued'); expect(job.error).toBe('')
+  expect(job.seasonNumber).toBeUndefined(); expect(job.episodeNumber).toBeUndefined(); expect(job.seasonReview).toBeUndefined()
 })
 
 test('损坏状态停止加载，不能默认为空队列', async () => {

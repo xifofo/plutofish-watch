@@ -346,16 +346,25 @@ export class WatchService {
       if (!sameSignature(await safeWatchFile(root, job.path), job.signature)) throw new Error('文件已变化，请重新扫描')
       if (root.work.mediaType === 'tv') {
         const episode = input.episodeNumber ?? job.episodeNumber
+        const season = input.seasonNumber ?? root.seasonNumber
+        if (!Number.isInteger(season) || season! < 0 || season! > 10000) throw new Error('请填写 0–10000 的季号')
         if ((episode !== undefined || input.action === 'confirm' || job.fileKey)
           && (!Number.isInteger(episode) || episode! < 0 || episode! > 100000)) throw new Error('请填写 0–100000 的集号')
         if (job.fileKey && episode !== job.episodeNumber) throw new Error('已登记任务不能修改集号')
+        if ((job.fileKey || job.release) && season !== root.seasonNumber) throw new Error('已确认版本或登记的任务不能修改季号')
+        if (job.seasonReview && input.action === 'confirm' && input.seasonNumber === undefined) throw new Error('请确认季号和集号')
+        if (input.seasonNumber !== undefined && input.action === 'confirm') {
+          job.seasonNumber = season; job.seasonConfirmed = true; delete job.seasonReview
+          if (season !== root.seasonNumber) { delete job.versionReview; delete job.targetKey }
+        }
         job.episodeNumber = episode
       }
       this.publisher.worker.resumeAccount(root.binding)
       delete job.retry
       job.status = job.fileKey ? 'queued' : 'waiting'; job.manuallyPaused = false; job.error = ''
-      // 尚未登记的文件仍需通过当前稳定窗口；季号变化后可回到人工集号确认。
-      if (!job.fileKey && root.enabled) await this.watcher.scanOne(root)
+      // 用原目录配置补扫整批；逐文件的季号不能改变其他文件缺省季号。
+      const current = this.store.data.watches.find(w => w.id === job.watchId)
+      if (!job.fileKey && current?.enabled) await this.watcher.scanOne(current)
     } else throw new Error('此状态不支持该操作')
     this.store.save(); this.changed()
   }

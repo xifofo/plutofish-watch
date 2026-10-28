@@ -23,6 +23,7 @@ import { releaseSource, sourceReviewReason, normalizeRange } from '../../vendor/
 import { actualVersionSummary } from '../../vendor/publisher/src/lib/actual-version'
 import type { RetentionOptions } from '../../vendor/publisher/src/integrations/plutofish/publication-retention'
 import { OneTimeBatches } from './one-time'
+import { resolveJobEpisode } from './job-episode'
 
 export class WatchPublisher {
   readonly worker: PublicationWorker
@@ -162,6 +163,14 @@ export class WatchPublisher {
     if (this.store.data.jobs.filter(j => ['processing', 'uploading'].includes(j.status) && this.eligible(this.store.rootFor(j))).length >= 4) return
     const job = this.store.data.jobs.find(j => j.status === 'queued' && this.eligible(this.store.data.watches.find(w => w.id === j.watchId)))
     if (!job) return
+    // 兼容升级前已排队但尚未确认版本的文件；已登记的发布清单始终沿用原季。
+    if (job.seasonNumber === undefined && !job.fileKey && !job.release) {
+      resolveJobEpisode(this.store.data.watches.find(w => w.id === job.watchId)!, job)
+      if (job.seasonReview) {
+        job.status = 'review'; job.error = job.seasonReview; this.store.save(); this.changed()
+        return
+      }
+    }
     const root = this.store.rootFor(job)!
     const abort = new AbortController()
     const promise = this.prepare(root, job, abort.signal).finally(() => { this.preparing = undefined })

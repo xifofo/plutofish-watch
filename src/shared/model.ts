@@ -16,7 +16,7 @@ export type Binding = {
 }
 export type Work = { mediaType: 'movie' | 'tv'; tmdbId: string; category: string }
 export type WorkOption = { tmdbId: string; title: string; originalTitle: string; year?: number }
-/** 识别只产生草稿，目录保存后不再根据后续文件重新绑定。 */
+/** 作品识别只产生草稿；文件季号在已确认作品内单独识别。 */
 export type { CategoryMatch, RecognizedWork, Recognition } from '../../vendor/publisher/src/integrations/plutofish/recognition-types'
 import type { Recognition } from '../../vendor/publisher/src/integrations/plutofish/recognition-types'
 export type RecognitionSample = { directoryName: string; fileName: string | null; truncated: boolean }
@@ -69,6 +69,8 @@ export type WatchJob = {
   /** 编辑目录后，已开始发布的任务继续沿用原路径和发布归属。 */
   watchSnapshot?: WatchRoot
   status: JobStatus; createdAt: string; updatedAt: string; episodeNumber?: number
+  /** 文件的发布季；省略的旧任务沿用目录季号，已登记文件不重新识别。 */
+  seasonNumber?: number; seasonConfirmed?: boolean; seasonReview?: string
   fileKey?: string; sha1?: string; percent: number; phase?: string; error: string
   /** 已脱敏的失败阶段与服务错误标识，不包含请求正文、凭据或上传地址。 */
   errorDetails?: import('../../vendor/publisher/src/integrations/plutofish/retry').FailureDetails
@@ -129,7 +131,7 @@ export interface WatchAPI {
   scan(): Promise<void>
   backfill(id: string): Promise<number>
   pauseAll(): Promise<void>
-  job(input: { id: string; action: 'pause' | 'resume' | 'cancel' | 'confirm' | 'selectVersion' | 'refreshVersion' | 'confirmSource'; episodeNumber?: number; releaseId?: string; source?: ReleaseSource }): Promise<void>
+  job(input: { id: string; action: 'pause' | 'resume' | 'cancel' | 'confirm' | 'selectVersion' | 'refreshVersion' | 'confirmSource'; episodeNumber?: number; seasonNumber?: number; releaseId?: string; source?: ReleaseSource }): Promise<void>
   reveal(id: string): Promise<void>
   onChange(callback: (state: Snapshot) => void): () => void
 }

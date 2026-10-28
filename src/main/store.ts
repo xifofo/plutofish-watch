@@ -6,6 +6,7 @@ import type { DiskState, WatchJob, WatchRoot } from '../shared/model'
 import { defaultRetention, validateRetention } from '../shared/retention'
 import { validateWatchPaths } from '../shared/watch-paths'
 import { validateOneTimeRoot } from './one-time'
+import { jobTarget } from '../shared/job-target'
 
 export function atomicJSON(path: string, data: unknown): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
@@ -46,6 +47,9 @@ export class WatchStore {
     this.data = value
     // 中断的本地探测重新开始；已有上传清单另由发布器恢复。
     for (const job of value.jobs) {
+      if (job.seasonNumber !== undefined && (!Number.isInteger(job.seasonNumber) || job.seasonNumber < 0 || job.seasonNumber > 10000)) {
+        throw new Error('文件季号记录损坏，请保留数据文件后修复')
+      }
       delete job.transfer
       if (job.status === 'preparing') job.status = 'queued'
     }
@@ -59,6 +63,6 @@ export class WatchStore {
   rootFor(job?: WatchJob): WatchRoot | undefined {
     const root = this.data.watches.find(w => w.id === job?.watchId)
     if (!root || !job) return undefined
-    return job.watchSnapshot ? { ...job.watchSnapshot, enabled: root.enabled } : root
+    return jobTarget(root, job)
   }
 }

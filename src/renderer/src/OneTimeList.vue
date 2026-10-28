@@ -22,7 +22,7 @@ function processed(root: WatchRoot, jobs: WatchJob[]) {
     <article v-for="root in roots" :key="root.id" class="watch-row">
       <div class="watch-folder"><Icon name="upload" :size="24" /></div>
       <div class="watch-details">
-        <h3>{{ root.title }} <span v-if="root.work.mediaType === 'tv'">第 {{ root.seasonNumber }} 季</span></h3>
+        <h3>{{ root.title }} <span v-if="root.work.mediaType === 'tv'">按文件识别季 · 默认第 {{ root.seasonNumber }} 季</span></h3>
         <div class="path" :title="root.selectedFiles?.join('、') || root.path">{{ root.selectedFiles?.join('、') || root.path }}</div>
         <div class="watch-tags"><span>{{ root.releaseName }}</span><span>{{ root.binding.sourceAccount.alias }} → {{ root.directoryPath || root.directoryId }}</span></div>
         <small>{{ processed(root, jobs) }} / {{ root.batch?.files.length }} 个视频已处理 · {{ cleanupLabel(root) }}</small>

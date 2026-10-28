@@ -1,7 +1,8 @@
 /** 目录编辑在扫描和上传暂停后应用；已登记任务保留原配置，未登记文件重新等待稳定。 */
 import type { WatchRoot } from '../shared/model'
 import { WatchStore } from './store'
-import { episodeFromName, watchPathFor, within } from './files'
+import { watchPathFor, within } from './files'
+import { resolveJobEpisode } from './job-episode'
 import { initializedWatchPaths, watchPaths } from '../shared/watch-paths'
 
 export function applyWatchEdit(store: WatchStore, root: WatchRoot, next: WatchRoot, now = Date.now()): void {
@@ -15,19 +16,22 @@ export function applyWatchEdit(store: WatchStore, root: WatchRoot, next: WatchRo
   const stabilityChanged = root.stableSeconds !== next.stableSeconds
   for (const job of store.data.jobs.filter(j => j.watchId === root.id)) {
     if (job.fileKey || ['completed', 'duplicate', 'cancelled'].includes(job.status)) {
-      job.watchSnapshot ??= structuredClone(root)
+      job.watchSnapshot ??= structuredClone(store.rootFor(job)!)
       continue
     }
     const directory = watchPathFor(root, job.path)
     if (moved && (!directory || !retained.includes(directory))) {
-      job.watchSnapshot = structuredClone(root)
+      job.watchSnapshot = structuredClone(store.rootFor(job)!)
       job.status = 'cancelled'; job.error = '监控路径已更换，原路径中未开始发布的任务已停止'
     } else if ((targetChanged || stabilityChanged) && !job.changed) {
       if (targetChanged) {
         delete job.release; delete job.versionReview; delete job.sourceOverride
         delete job.targetKey; delete job.retry; delete job.preparationError
       }
-      if (workChanged) job.episodeNumber = next.work.mediaType === 'tv' ? episodeFromName(job.relativePath, next.seasonNumber!) : undefined
+      if (workChanged) {
+        delete job.episodeNumber; delete job.seasonNumber; delete job.seasonConfirmed; delete job.seasonReview
+        resolveJobEpisode(next, job)
+      }
       job.status = job.manuallyPaused ? 'paused' : 'waiting'; job.error = ''
       const observation = store.data.observations[root.id]?.[job.path]
       if (observation && targetChanged) observation.stableSince = now

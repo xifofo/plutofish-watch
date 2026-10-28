@@ -53,17 +53,38 @@ test('延长稳定等待时间后，已排队但尚未发布的文件重新检�
   expect(root.enabled).toBe(true)
 })
 
-test('暂停任务修改季号后，继续可进入集号确认，不会卡在无输入框的暂停状态', async () => {
+test('修改默认季后，暂停文件恢复时仍按文件自己的季号入队', async () => {
   const { service, root, job, observation } = await setup()
   await service.job({ id: job.id, action: 'pause' })
   await service.updateWatch({ id: root.id, watch: { ...root, seasonNumber: 2 } })
   expect(job.status).toBe('paused'); expect(job.manuallyPaused).toBe(true)
-  expect(job.episodeNumber).toBeUndefined()
+  expect(job.episodeNumber).toBe(1); expect(job.seasonNumber).toBe(1)
   observation().stableSince = Date.now() - 20_000
   await service.job({ id: job.id, action: 'resume' })
-  expect(job.status).toBe('review')
-  await service.job({ id: job.id, action: 'confirm', episodeNumber: 4 })
-  expect(job.status).toBe('queued'); expect(job.episodeNumber).toBe(4)
+  expect(job.status).toBe('queued')
+  expect(service.store.rootFor(job)?.seasonNumber).toBe(1)
+})
+
+test('季号冲突可人工确认且持久化，不能只填集号绕过冲突，也不改其他文件默认季', async () => {
+  const { service, root, job, observation } = await setup()
+  const folder = join(root.path, 'S2'); await mkdir(folder)
+  const conflicting = join(folder, 'Show.S01E04.mp4'); await writeFile(conflicting, 'conflict')
+  await service.watcher.scanOne(root)
+  for (const o of Object.values(service.store.data.observations[root.id])) o.stableSince = Date.now() - 20_000
+  await service.watcher.scanOne(root)
+  const conflict = service.store.data.jobs.find(j => j.path === conflicting)!
+  expect(conflict.status).toBe('review')
+  await expect(service.job({ id: conflict.id, action: 'confirm', episodeNumber: 4 })).rejects.toThrow('确认季号')
+  await expect(service.job({ id: conflict.id, action: 'confirm', seasonNumber: -1, episodeNumber: 4 })).rejects.toThrow('季号')
+  await service.job({ id: conflict.id, action: 'confirm', seasonNumber: 2, episodeNumber: 4 })
+  expect(conflict).toMatchObject({ status: 'queued', seasonNumber: 2, episodeNumber: 4, seasonConfirmed: true })
+  await service.job({ id: conflict.id, action: 'pause' })
+  job.status = 'waiting'; observation().stableSince = Date.now() - 20_000
+  await service.job({ id: conflict.id, action: 'resume' })
+  expect(service.store.rootFor(conflict)?.seasonNumber).toBe(2)
+  expect(job.seasonNumber).toBe(1); expect(root.seasonNumber).toBe(1)
+  conflict.fileKey = 'registered'; conflict.status = 'paused'
+  await expect(service.job({ id: conflict.id, action: 'confirm', seasonNumber: 1, episodeNumber: 4 })).rejects.toThrow('不能修改季号')
 })
 
 test('暂停尚未稳定的文件后继续，不能绕过稳定等待', async () => {

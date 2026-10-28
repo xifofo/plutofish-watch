@@ -33,7 +33,7 @@ async function setup(options: { check?: (body: any) => unknown; proofs?: boolean
   const generated = spawnSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=green:s=320x180:d=0.1', '-c:v', 'mpeg4', '-y', file])
   if (generated.status !== 0) throw new Error('生成本地测试视频失败')
   const calls: Array<{ path: string; body: any; auth: string | undefined }> = []
-  const createdReleases = new Map<string, { id: string; name: string; resolution: string; dynamicRange: string; status: string }>()
+  const createdReleases = new Map<string, { id: string; name: string; resolution: string; dynamicRange: string; status: string; seasonNumber?: number }>()
   const bindings = new Map<string, string>()
   const server = createServer(async (req, res) => {
     let body = ''
@@ -56,7 +56,7 @@ async function setup(options: { check?: (body: any) => unknown; proofs?: boolean
     else if (path === 'releases/query') {
       result = options.releases?.(payload)
       if (result && typeof result === 'object' && 'items' in result && Array.isArray(result.items)) {
-        const items = [...result.items, ...createdReleases.values()]
+        const items = [...result.items, ...[...createdReleases.values()].filter(row => row.seasonNumber === payload.seasonNumber)]
         result = { ...result, items, total: items.length, boundReleaseId: bindings.get(payload.releaseKey) }
       }
     }
@@ -68,7 +68,7 @@ async function setup(options: { check?: (body: any) => unknown; proofs?: boolean
         if (target.existingReleaseId) bindings.set(target.releaseKey, target.existingReleaseId)
         else {
           const row = { id: String(createdReleases.size + 1).padStart(32, '0'), name: target.name,
-            resolution: target.resolution, dynamicRange: target.dynamicRange, status: 'published' }
+            resolution: target.resolution, dynamicRange: target.dynamicRange, status: 'published', seasonNumber: target.seasonNumber }
           createdReleases.set(target.releaseKey, row)
           bindings.set(target.releaseKey, row.id)
         }
@@ -121,6 +121,62 @@ async function until(publisher: WatchPublisher, ready: () => boolean) {
   }
   throw new Error('本地发布任务未完成')
 }
+
+test('整部剧跨季发布查询和登记各自季号，固定版本不串季，同集同内容跨季不去重', async () => {
+  const f = await setup({ releases: () => releasePage([]) })
+  sampleVideo(f.file, '1280x720'); f.job.signature = await safeFile(f.root.path, f.file)
+  await until(f.publisher, () => f.job.status === 'completed')
+  const file = join(f.root.path, 'Show.S02E01.mp4'); await copyFile(f.file, file)
+  const second: WatchJob = { id: 'season-2', watchId: f.root.id, path: file, relativePath: 'Show.S02E01.mp4',
+    signature: await safeFile(f.root.path, file), status: 'waiting', error: '', percent: 0, createdAt: f.job.createdAt, updatedAt: f.job.updatedAt }
+  f.store.data.jobs.push(second)
+  const watcher = new DirectoryWatcher(f.store, () => {}, async () => {}, e => { throw e })
+  disposers.push(() => watcher.close())
+  f.store.data.observations[f.root.id] = Object.fromEntries([f.job, second].map(j => [j.path, { jobId: j.id, signature: j.signature, stableSince: Date.now() - 20_000 }]))
+  await watcher.scan()
+  expect([second.seasonNumber, second.episodeNumber, second.status]).toEqual([2, 1, 'queued'])
+  await until(f.publisher, () => second.status === 'completed')
+  const reports = f.calls.filter(c => c.path === 'files/report')
+  expect(reports.map(c => [c.body.releaseTarget.seasonNumber, c.body.episodeNumber])).toEqual([[1, 1], [2, 1]])
+  expect(reports[0].body.releaseTarget.existingReleaseId).toBe(f.root.releaseId)
+  expect(reports[1].body.releaseTarget.existingReleaseId).toBeUndefined()
+  expect(reports[1].body.releaseTarget.name).toStartWith('S02.')
+  expect(f.calls.filter(c => c.path === 'releases/query').every(c => c.body.seasonNumber === 2)).toBe(true)
+  expect(second.targetKey).not.toBe(f.job.targetKey)
+  const key = second.fileKey
+  applyWatchEdit(f.store, f.root, { ...f.root, seasonNumber: 3 })
+  const restored = new WatchStore(f.store.path)
+  expect(restored.rootFor(restored.data.jobs[1])?.seasonNumber).toBe(2)
+  expect(restored.data.jobs[1].fileKey).toBe(key)
+})
+
+test('单个电影按电影查询版本并登记，不发送季号集号；来源缺失显示来源确认', async () => {
+  for (const missingSource of [false, true]) {
+    const f = await setup({ releases: () => releasePage([]) })
+    f.root.work = { mediaType: 'movie', tmdbId: '456', category: 'movie' }
+    f.root.versionMode = 'auto'; f.root.releaseId = ''; delete f.root.seasonNumber
+    if (missingSource) f.root.sourcePreset = {}
+    const file = join(f.root.path, 'Movie.2023.mp4')
+    await rename(f.file, file); sampleVideo(file, '1280x720')
+    f.job.path = file; f.job.relativePath = 'Movie.2023.mp4'; f.job.signature = await safeFile(f.root.path, file)
+    await until(f.publisher, () => ['completed', 'review'].includes(f.job.status))
+    expect(f.job.seasonNumber).toBeUndefined(); expect(f.job.episodeNumber).toBeUndefined()
+    const queries = f.calls.filter(c => c.path === 'releases/query')
+    expect(queries.length).toBeGreaterThan(0)
+    expect(queries.every(c => c.body.workTarget.mediaType === 'movie' && c.body.seasonNumber === undefined)).toBe(true)
+    if (missingSource) {
+      expect(f.job.status).toBe('review'); expect(f.job.versionReview?.sourceRequired).toBe(true)
+      expect(f.job.error).not.toContain('集号')
+      expect(f.calls.some(c => c.path === 'files/report')).toBe(false)
+    } else {
+      expect(f.job.status).toBe('completed')
+      const report = f.calls.find(c => c.path === 'files/report')!.body
+      expect(report.releaseTarget.workTarget.mediaType).toBe('movie')
+      expect(report.releaseTarget.seasonNumber).toBeUndefined(); expect(report.episodeNumber).toBeUndefined()
+      expect(report.releaseTarget.name).not.toStartWith('S01.')
+    }
+  }
+})
 
 test('旧版缺集标题任务升级后沿用任务键，完成任务上报与资源登记', async () => {
   const f = await setup()
