@@ -16,6 +16,10 @@ export type PublicationState = {
   draft: PublicationDraft; snapshot: TaskSnapshot;
   /** 失败快照按顺序补报，不能被后续重试或完成状态覆盖。 */
   pendingFailures?: TaskSnapshot[]; acknowledged: number; checkpoint?: UploadCheckpoint
+  /** Explicit per-file upload request; survives restart when automatic upload is off. */
+  manualUpload?: boolean
+  /** Turning automatic upload back on must not release existing waiting tasks. */
+  autoUploadBlocked?: boolean
   /** 首次发布成功的时间不随重试、校验、重启刷新；旧清单首次升级时起算。 */
   completedAt?: number
   failure?: { retryable: boolean; retryAfterMs?: number; diagnostic?: FailureDetails }

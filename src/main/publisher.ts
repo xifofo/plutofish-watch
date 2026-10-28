@@ -3,6 +3,7 @@ import { PublisherError, retryableError, retryDelay } from '../../vendor/publish
 import { publicationFailure } from '../../vendor/publisher/src/integrations/plutofish/publication-error'
 import { basename, extname, join, resolve } from 'node:path'
 import { realpathSync } from 'node:fs'
+import { lstat } from 'node:fs/promises'
 import type { PublicationState } from '../../vendor/publisher/src/integrations/plutofish/publication-state'
 import type { PublicationDraft } from '../../vendor/publisher/src/integrations/plutofish/publication-types'
 import { PublicationWorker } from '../../vendor/publisher/src/integrations/plutofish/publication-worker'
@@ -40,6 +41,10 @@ export class WatchPublisher {
       try { this.connection.assertBinding(root.binding); return true } catch { return false }
     }, () => this.now())
     this.worker = new PublicationWorker(connection, (draft, transient) => this.update(draft, transient), {
+      probeMedia: async (path, signal = new AbortController().signal) => {
+        const file = await lstat(path)
+        return (await probeFile(findProbe(this.store.data.ffprobe), path, file.size, signal)).media
+      },
       directory: join(directory, 'publications'), factory: retryOptions.factory, manual: true, now: retryOptions.now, retention: {
         compute: retryOptions.compute,
         now: retryOptions.now,

@@ -3,6 +3,7 @@ const { app, BrowserWindow, nativeTheme } = require('electron')
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), http = require('node:http')
 const assert = require('node:assert/strict'), sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 let temp, server, failed = false, nextId = 100, failCreate = true, slowBrowse = false
+const output = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-directory-screens-')); console.log('screenshots:', output)
 const calls = [], errors = [], paths = new Map([['0', [{ id: '0', name: '/' }]], ['10', [{ id: '0', name: '/' }, { id: '10', name: '影视资源' }]],
   ['11', [{ id: '0', name: '/' }, { id: '11', name: '备用资源' }]], ['12', [{ id: '0', name: '/' }, { id: '10', name: '影视资源' }, { id: '12', name: '待整理' }]]])
 async function until(fn, label = '界面', timeout = 15000) {
@@ -64,8 +65,8 @@ async function until(fn, label = '界面', timeout = 15000) {
   }
   const fill = (selector, value) => js(`(() => { const e = document.querySelector(${JSON.stringify(selector)}); if (!e) throw Error('缺少输入框: ' + ${JSON.stringify(selector)}); e.value=${JSON.stringify(value)}; e.dispatchEvent(new Event('input',{bubbles:true})); e.dispatchEvent(new Event('change',{bubbles:true})); })()`)
   const screenshot = async name => {
-    fs.mkdirSync(path.resolve('.smoke'), { recursive: true }); win.show(); win.webContents.invalidate(); await sleep(200)
-    fs.writeFileSync(path.resolve('.smoke', `${name}.png`), (await win.webContents.capturePage(undefined, { stayAwake: true })).toPNG())
+    fs.mkdirSync(output, { recursive: true }); win.show(); win.webContents.invalidate(); await sleep(200)
+    fs.writeFileSync(path.join(output, `${name}.png`), (await win.webContents.capturePage(undefined, { stayAwake: true })).toPNG())
     assert.equal(await js('document.documentElement.scrollWidth > innerWidth'), false)
   }
   const creates = () => calls.filter(c => c.route === 'directories/create')
@@ -75,7 +76,19 @@ async function until(fn, label = '界面', timeout = 15000) {
   const dialogPreview = () => js('document.querySelector(".directory-dialog .directory-preview p")?.textContent')
   const openDialog = async () => { await click('在网盘创建文件夹'); await until(() => dialogPreview().then(Boolean), '选择上级目录弹窗') }
   const closeDialog = async () => { await click('取消'); await until(() => js('!document.querySelector("dialog[open]")')) }
-  const changeParent = async name => { await click('网盘顶层'); await click(name); await until(() => dialogPreview().then(value => value?.startsWith('/' + name + '/'))) }
+  const enter = async name => {
+    const selector = JSON.stringify('[aria-label="进入“' + name + '”"]')
+    await until(() => js(`!!document.querySelector(${selector}) && !document.querySelector(${selector}).disabled && !document.querySelector(${selector}).closest('fieldset:disabled')`))
+    await js(`document.querySelector(${selector}).click()`)
+  }
+  const changeParent = async name => {
+    await click('网盘顶层')
+    await until(() => js('!!document.querySelector(".directory-dialog .folder-select:not(:disabled)")'))
+    const reads = calls.filter(c => c.route === 'directories').length
+    await click(name)
+    await until(() => dialogPreview().then(value => value?.startsWith('/' + name + '/')))
+    assert.equal(calls.filter(c => c.route === 'directories').length, reads, 'single selection must not browse')
+  }
   await until(() => js('!!window.plutoWatch').catch(() => false)); await until(async () => (await snapshot()).ffprobeAvailable)
   assert.equal(await js('document.querySelector(".sidebar-version").textContent'), 'v' + require('../package.json').version)
   await js(`window.plutoWatch.connect({ url: 'http://127.0.0.1:${server.address().port}', key: 'offline-only' })`); await js('window.plutoWatch.pauseAll()')
@@ -84,11 +97,30 @@ async function until(fn, label = '界面', timeout = 15000) {
   await until(() => js('document.querySelector("h1")?.textContent === "添加监控目录"'))
   assert.equal(await js('!!document.querySelector(".directory-create")'), false)
   await fill('input[pattern="0|[1-9][0-9]{0,39}"]', '10'); await fill('input[placeholder="/"]', '/影视资源')
+  await click('浏览网盘')
+  await until(() => js('!!document.querySelector(".cloud-picker .folder-select:not(:disabled)")'))
+  nativeTheme.themeSource = 'light'
+  const reads = calls.filter(c => c.route === 'directories').length
+  await click('待整理')
+  assert.equal(calls.filter(c => c.route === 'directories').length, reads)
+  assert.equal(await js('document.querySelector(".cloud-target-path").textContent'), '保存到：/影视资源/待整理')
+  await js('document.querySelector(".cloud-picker").scrollIntoView({ block: "center" })')
+  await screenshot('39-directory-selected-light')
+  await js('document.querySelector(".cloud-picker .folder-select[aria-pressed=true]").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))')
+  await until(() => js('document.querySelectorAll(".cloud-picker .cloud-path button").length === 3'))
+  assert.equal(calls.filter(c => c.route === 'directories').length, reads + 1)
+  await click('影视资源 /'); await enter('待整理')
+  await until(() => js('document.querySelectorAll(".cloud-picker .cloud-path button").length === 3'))
+  assert.equal(calls.filter(c => c.route === 'directories').length, reads + 3)
+  await click('影视资源 /'); await click('待整理'); await click('保存到选中的文件夹')
+  assert.equal(await directoryId(), '12'); assert.equal(await directoryPath(), '/影视资源/待整理')
+  await fill('input[pattern="0|[1-9][0-9]{0,39}"]', '10'); await fill('input[placeholder="/"]', '/影视资源')
   await fill('input[placeholder="选择包含视频文件的目录"]', media)
   await until(() => js('document.querySelector(".selected-work strong")?.textContent === "Doctor X"'), '识别成功')
   await until(() => js('document.querySelector(".directory-preview").textContent.includes("/影视资源/日韩剧集/Doctor X {tmdbid-45951}/season 01")'))
   assert.equal(creates().length, 0)
-  nativeTheme.themeSource = 'dark'; win.setSize(760, 720)
+  nativeTheme.themeSource = 'dark'; win.setSize(840, 720)
+  await until(() => js('matchMedia("(prefers-color-scheme: dark)").matches'), '深色模式')
   await js('document.querySelector(".directory-create").scrollIntoView({ block: "center" })'); await screenshot('40-manual-directory-create-narrow-dark')
   await openDialog(); await click('待整理'); await until(() => dialogPreview().then(value => value?.includes('/影视资源/待整理/')))
   assert.equal(await directoryId(), '10'); assert.equal(creates().length, 0)
@@ -109,7 +141,7 @@ async function until(fn, label = '界面', timeout = 15000) {
   assert.deepEqual(creates()[1].body.segments, ['日韩剧集', 'Doctor X {tmdbid-45951}', 'season 01'])
   await js('[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "文件夹已创建").click()')
   assert.equal(creates().length, 2)
-  await click('浏览网盘'); await click('选用当前目录')
+  await click('浏览网盘'); await click('保存到当前文件夹')
   assert.equal(await js('[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "文件夹已创建").disabled'), true)
   await click('创建并开始监控'); await until(async () => (await snapshot()).watches.length === 1)
   const originalCreation = (await snapshot()).watches[0].directoryCreation
@@ -120,7 +152,7 @@ async function until(fn, label = '界面', timeout = 15000) {
   assert.equal(await js('document.querySelector("button[type=submit]").disabled'), true)
   assert.equal(creates().length, 2)
   await openDialog(); assert.equal(await dialogPreview(), '/备用资源/日韩剧集/Doctor X {tmdbid-45951}/season 02')
-  await changeParent('影视资源'); await click('待整理'); await until(() => dialogPreview().then(value => value?.startsWith('/影视资源/待整理/')))
+  await changeParent('影视资源'); await enter('影视资源'); await click('待整理'); await until(() => dialogPreview().then(value => value?.startsWith('/影视资源/待整理/')))
   await closeDialog(); assert.equal(await directoryId(), '101')
   await fill(seasonInput, '1'); await until(() => directoryId().then(id => id === '102'))
   assert.equal(await js('[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "文件夹已创建").disabled'), true)
@@ -135,7 +167,7 @@ async function until(fn, label = '界面', timeout = 15000) {
   const saved = (await snapshot()).watches[0]
   assert.equal(saved.directoryId, '103'); assert.ok(saved.directoryPath.includes('Doctor X')); assert.equal(saved.directoryCreation.parentId, '11')
   await click('编辑'); await fill(seasonInput, '3'); await until(() => directoryId().then(id => id === '101'))
-  await openDialog(); await changeParent('影视资源'); await click('待整理'); await until(() => dialogPreview().then(value => value === '/影视资源/待整理/其他剧集/新译名 {tmdbid-45951}/season 03'))
+  await openDialog(); await changeParent('影视资源'); await enter('影视资源'); await click('待整理'); await until(() => dialogPreview().then(value => value === '/影视资源/待整理/其他剧集/新译名 {tmdbid-45951}/season 03'))
   await click('确认创建文件夹'); await until(() => directoryId().then(id => id === '106'))
   assert.equal(creates()[3].body.directoryId, '12'); assert.deepEqual(creates()[3].body.segments, ['其他剧集', '新译名 {tmdbid-45951}', 'season 03'])
   await click('保存修改'); await until(() => js('document.querySelector("h1").textContent === "监控目录"'))

@@ -223,3 +223,5 @@ env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL pnpm exec electron tests/ui
 识别协议与校验由下载器的 `recognition.ts` / `recognition-types.ts` 统一维护，随发布引擎快照同步。离线窗口验收可运行 `electron tests/ui-recognition-smoke.cjs --interactive --dark`，终端输出临时服务地址和样本目录；通过实际界面连接和操作，不使用真实账号。
 
 115 开放接口明确返回访问上限时暂停同账号上传队列，至少等待 15 分钟后手动继续；重启和自动重连不会解除暂停。15 分钟是客户端保护策略，不是官方解封时限。OSS `SlowDown` 等暂时繁忙不触发账号暂停，保留有限指数退避；可恢复失败最多自动重试 8 次。已就绪文件不重复核验，新分片上传不查询空列表。准备期间被暂停的未登记任务保留在队列，解除账号暂停后可继续。共享发布引擎由 `scripts/sync-publisher.mjs` 同步。
+
+网盘目录选择统一为单击选中、双击或右侧箭头进入，底部显示实际目标路径。单击不请求目录列表；浏览和创建父目录都采用这套交互，新建操作使用选中的父目录。

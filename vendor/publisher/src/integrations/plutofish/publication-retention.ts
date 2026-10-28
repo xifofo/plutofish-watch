@@ -21,6 +21,8 @@ const completed = (state: PublicationState) => state.snapshot.stage === 'complet
 
 export class PublicationRetention {
   private running?: Promise<void>
+  private runningKey?: string
+  private runningAbort?: AbortController
   private readonly retryAt = new Map<string, number>()
   private nextScan = 0
   private queue: string[] = []
@@ -40,10 +42,14 @@ export class PublicationRetention {
         (s.retention?.ed2k && (!completed(s) || s.retention.acknowledged)) || (this.retryAt.get(s.draft.fileKey) ?? 0) > this.now()) return false
       try { this.connection.assertBinding(s.draft.binding); return true } catch { return false }
     })
-    if (state) this.running = this.record(state, signal).then(() => { this.retryAt.delete(state.draft.fileKey) }).catch(() => {
+    if (!state) return
+    this.runningKey = state.draft.fileKey
+    this.runningAbort = new AbortController()
+    const recordSignal = AbortSignal.any([signal, this.runningAbort.signal])
+    this.running = this.record(state, recordSignal).then(() => { this.retryAt.delete(state.draft.fileKey) }).catch(() => {
       this.retryAt.set(state.draft.fileKey, this.now() + 60_000)
-      if (!signal.aborted) this.changed(state, 'ED2K 保存未完成，保留本地成品并稍后重试')
-    }).finally(() => { this.running = undefined })
+      if (!recordSignal.aborted) this.changed(state, 'ED2K 保存未完成，保留本地成品并稍后重试')
+    }).finally(() => { this.running = undefined; this.runningKey = undefined; this.runningAbort = undefined })
   }
 
   /** 一次只计算一个 ED2K，长计算独立运行，上传和两路片段校验可继续推进。 */
@@ -172,6 +178,12 @@ export class PublicationRetention {
   }
 
   async close(): Promise<void> { await this.running }
+
+  /** 重新关联文件前停止旧路径的校验，避免迟到的结果覆盖新成品。 */
+  async stop(key: string): Promise<void> {
+    if (this.runningKey === key) { this.runningAbort?.abort(); await this.running }
+    this.retryAt.delete(key)
+  }
 
   /** 已确认本地文件消失后先发布展示状态，清单删除前由桌面端把它同步到历史。 */
   deleted(state: PublicationState): void {

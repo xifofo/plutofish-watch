@@ -146,6 +146,31 @@ test('旧版缺集标题任务升级后沿用任务键，完成任务上报与�
   expect(f.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'start')).toHaveLength(1)
 })
 
+test.each([true, false])('旧任务缺少规格时使用 Watch 配置的本机 ffprobe，工具可用：%s', async available => {
+  const f = await setup()
+  await f.publisher.tick()
+  const key = f.job.fileKey!
+  await f.publisher.close()
+  const path = join(f.temp, 'publications', key.replace(':', '-') + '.state.json')
+  const saved = JSON.parse(await readFile(path, 'utf8'))
+  delete saved.draft.measured
+  await writeFile(path, JSON.stringify(saved))
+  f.store.data.ffprobe = available ? findProbe('') : join(f.temp, 'missing-ffprobe')
+  const publisher = new WatchPublisher(f.store, f.connection, f.temp, () => {}, e => { throw e })
+  disposers.push(() => publisher.close())
+  await until(publisher, () => f.job.status === (available ? 'completed' : 'failed'))
+  expect(f.job.fileKey).toBe(key)
+  expect((await readFile(f.file)).length).toBe(f.job.signature.size)
+  if (available) {
+    const restored = JSON.parse(await readFile(path, 'utf8'))
+    expect(restored.draft.measured.media).toMatchObject({ status: 'probed', width: 320, height: 180 })
+    expect(f.calls.filter(c => c.path === 'files/report')).toHaveLength(1)
+  } else {
+    expect(f.job.error).toContain('检测媒体规格失败')
+    expect(f.calls.filter(c => c.path === 'uploads/prepare')).toHaveLength(0)
+  }
+})
+
 test('编辑目录后已登记任务恢复时仍使用原作品、版本和网盘目录', async () => {
   const f = await setup()
   await f.publisher.tick()

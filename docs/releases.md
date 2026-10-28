@@ -11,7 +11,7 @@
 
 Windows 安装包名为 `PlutoFish-Watch-<版本>-windows-x64-setup.exe`；macOS 为 `PlutoFish-Watch-<版本>-macos-arm64.dmg` 和 `PlutoFish-Watch-<版本>-macos-x64.dmg`。
 
-只需仓库自带的 `GITHUB_TOKEN`，只有发布 job 能写 Release；无需额外 PAT、PlutoFish 或 115 凭据。当前仓库为私有仓库，下载附件需要有权限的 GitHub 账号。
+只需仓库自带的 `GITHUB_TOKEN`，只有发布 job 能写 Release；无需额外 PAT、PlutoFish 或 115 凭据。当前仓库已公开，可直接下载 Release 附件。
 
 ## 手动构建与重试
 

@@ -1,16 +1,20 @@
+<!-- 创建目录前选择父目录；本地选中子项即可更新完整创建路径。 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { DirectoryPage, WatchInput } from '../../shared/model'
 import { creationDraftForParent, creationSegments, rememberCreatedDirectory } from '../../shared/directory-creation'
 import Icon from './Icon.vue'
+import CloudDirectoryRows from './CloudDirectoryRows.vue'
 
 const props = defineProps<{ input: WatchInput; categoryLabel: string }>()
 const emit = defineEmits<{ close: []; created: [input: WatchInput] }>()
 const dialog = ref<HTMLDialogElement>(), page = ref<DirectoryPage | null>(null)
 const loading = ref(false), creating = ref(false), error = ref(''), failedBrowse = ref(false)
 let active = true, generation = 0, requestedId = props.input.directoryId, requestedCursor = ''
-const draft = computed(() => page.value ? creationDraftForParent(props.input, {
-  id: page.value.path.at(-1)!.id, path: '/' + page.value.path.slice(1).map(p => p.name).join('/'),
+const selectedFolder = ref<DirectoryPage['items'][number]>()
+const targetPath = computed(() => page.value ? [...page.value.path, ...(selectedFolder.value ? [selectedFolder.value] : [])] : [])
+const draft = computed(() => targetPath.value.length ? creationDraftForParent(props.input, {
+  id: targetPath.value.at(-1)!.id, path: '/' + targetPath.value.slice(1).map(p => p.name).join('/'),
 }) : null)
 const segments = computed(() => draft.value ? creationSegments(draft.value, props.categoryLabel) : [])
 const preview = computed(() => draft.value ? [draft.value.directoryPath.replace(/\/+$/, ''), ...segments.value].join('/') : '')
@@ -19,10 +23,14 @@ async function browse(id: string, cursor = '') {
   if (loading.value || creating.value) return
   const current = ++generation
   requestedId = id; requestedCursor = cursor; loading.value = true; error.value = ''; failedBrowse.value = false
+  if (!cursor) { page.value = null; selectedFolder.value = undefined }
+
   try {
     const result = await window.plutoWatch.directories({ sourceAccountId: props.input.sourceAccountId, directoryId: id, cursor })
     if (!active || current !== generation) return
-    page.value = cursor && page.value ? { ...result, items: [...page.value.items, ...result.items] } : result
+    const items = new Map((cursor ? page.value?.items ?? [] : []).map(item => [item.id, item]))
+    for (const item of result.items) items.set(item.id, item)
+    page.value = { ...result, items: [...items.values()] }
   } catch (cause) {
     if (!active || current !== generation) return
     error.value = cause instanceof Error ? cause.message : '读取目录失败，请重试'; failedBrowse.value = true
@@ -55,7 +63,8 @@ onUnmounted(() => { active = false; generation++; dialog.value?.close() })
       <p v-if="loading" class="hint" role="status">正在读取网盘目录…</p>
       <fieldset v-if="page" :disabled="loading || creating">
         <div class="cloud-path"><button v-for="part in page.path" :key="part.id" type="button" class="link" @click="browse(part.id)">{{ part.name || '/' }} /</button></div>
-        <div class="directory-list"><button v-for="item in page.items" :key="item.id" type="button" class="folder-option" @click="browse(item.id)"><Icon name="folder" /><span>{{ item.name }}</span><Icon name="arrow" :size="15" /></button><p v-if="!page.items.length && !loading" class="hint">此目录下没有子目录，可以在这里创建。</p></div>
+        <p class="hint">单击选中，双击或点击右侧箭头进入</p>
+        <div class="directory-list"><CloudDirectoryRows :items="page.items" :selected-id="selectedFolder?.id" :disabled="loading || creating || failedBrowse" @select="selectedFolder = $event" @enter="browse" /><p v-if="!page.items.length && !loading" class="hint">此目录下没有子目录，可以在这里创建。</p></div>
         <button v-if="page.nextCursor" type="button" class="link" @click="browse(page.path.at(-1)!.id, page.nextCursor)">加载更多</button>
       </fieldset>
       <div v-if="draft" class="directory-preview"><span>确认创建路径</span><p>{{ preview }}</p></div>

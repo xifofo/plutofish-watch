@@ -1,11 +1,13 @@
+<!-- 监控与一次性上传表单；网盘浏览位置和待确认的保存位置分别维护。 -->
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import type { Snapshot, WatchInput, WatchRoot, Release, DirectoryPage, Recognition, RecognizedWork } from '../../shared/model'
 import Icon from './Icon.vue'
 import WorkPicker from './WorkPicker.vue'
 import SourceFields from './SourceFields.vue'
 import DirectoryRecognition from './DirectoryRecognition.vue'
 import DirectoryCreateDialog from './DirectoryCreateDialog.vue'
+import CloudDirectoryRows from './CloudDirectoryRows.vue'
 import { adjustCreationTarget, creationSegments, directoryCreated, directoryCreationPending } from '../../shared/directory-creation'
 import { watchPaths } from '../../shared/watch-paths'
 import { defaultOneTimeRetention } from '../../shared/retention'
@@ -50,6 +52,12 @@ if (props.initial && form.versionMode === 'fixed') {
     resolution: props.initial.releaseVersion?.resolution ?? '', dynamicRange: props.initial.releaseVersion?.dynamicRange ?? '', status: 'published' }]
 }
 const cloud = ref<DirectoryPage | null>(null), showCloud = ref(false)
+const selectedCloud = ref<DirectoryPage['items'][number]>()
+const cloudFailed = ref(false)
+const cloudTarget = computed(() => cloud.value ? [...cloud.value.path, ...(selectedCloud.value ? [selectedCloud.value] : [])] : [])
+const cloudTargetPath = computed(() => '/' + cloudTarget.value.slice(1).map(part => part.name).join('/'))
+let cloudGeneration = 0
+onBeforeUnmount(() => { cloudGeneration++ })
 const canCreate = computed(() => !!form.title.trim() && /^[1-9]\d{0,9}$/.test(form.work.tmdbId) && Number(form.work.tmdbId) <= 2147483647
   && !!categories.value.find(c => c.value === form.work.category) && !!form.sourceAccountId
   && (form.work.mediaType === 'movie' || (Number.isInteger(form.seasonNumber) && form.seasonNumber! >= 0 && form.seasonNumber! <= 10000)))
@@ -66,7 +74,13 @@ const sources = computed(() => props.state.connection.identity?.sourceAccounts ?
 watch(() => [form.work.tmdbId, form.work.mediaType, form.work.category, form.seasonNumber, form.sourceAccountId], () => {
   choices.value = []; form.releaseId = ''; queried.value = false
 })
-watch(() => form.sourceAccountId, () => { delete form.directoryCreation; form.directoryId = '0'; form.directoryPath = '/'; cloud.value = null })
+watch(() => form.sourceAccountId, () => {
+  cloudGeneration++
+  loading.value = false
+  delete form.directoryCreation
+  form.directoryId = '0'; form.directoryPath = '/'
+  cloud.value = null; selectedCloud.value = undefined; showCloud.value = false
+})
 watch(creationKey, () => adjustCreationTarget(form))
 watch(() => form.versionMode, () => {
   form.releaseId = form.versionMode === 'fixed' && choices.value.length === 1 ? choices.value[0].id : ''
@@ -113,19 +127,38 @@ async function selectedWork() {
   if (form.work.category && form.sourceAccountId) await query()
 }
 async function browse(id = form.directoryId, cursor = '') {
-  await perform(async () => {
-    const page = await window.plutoWatch.directories({ sourceAccountId: form.sourceAccountId, directoryId: id, cursor })
-    cloud.value = cursor && cloud.value ? { ...page, items: [...cloud.value.items, ...page.items] } : page
+  if (loading.value || props.busy) return
+  const generation = ++cloudGeneration
+  const sourceAccountId = form.sourceAccountId
+  loading.value = true; error.value = ''; cloudFailed.value = false
+  if (!cursor) { cloud.value = null; selectedCloud.value = undefined }
+
+  try {
+    const page = await window.plutoWatch.directories({ sourceAccountId, directoryId: id, cursor })
+    if (generation !== cloudGeneration || sourceAccountId !== form.sourceAccountId) return
+    const items = new Map((cursor ? cloud.value?.items ?? [] : []).map(item => [item.id, item]))
+    for (const item of page.items) items.set(item.id, item)
+    cloud.value = { ...page, items: [...items.values()] }
     showCloud.value = true
-  })
+  } catch (cause) {
+    if (generation !== cloudGeneration) return
+    error.value = cause instanceof Error ? cause.message : '读取目录失败，请重试'
+    cloudFailed.value = true
+  } finally {
+    if (generation === cloudGeneration) loading.value = false
+  }
 }
+
 function selectCloud() {
-  if (!cloud.value) return
-  if (form.directoryCreation && cloud.value.path.at(-1)!.id !== form.directoryCreation.directoryId) delete form.directoryCreation
-  form.directoryId = cloud.value.path.at(-1)!.id
-  form.directoryPath = '/' + cloud.value.path.slice(1).map(p => p.name).join('/')
+  const target = cloudTarget.value.at(-1)
+  if (!target || loading.value || props.busy || cloudFailed.value) return
+
+  if (form.directoryCreation && target.id !== form.directoryCreation.directoryId) delete form.directoryCreation
+  form.directoryId = target.id
+  form.directoryPath = cloudTargetPath.value
   showCloud.value = false
 }
+
 function manualDirectory(event: Event) {
   if (form.directoryCreation && (event.target as HTMLInputElement).value !== form.directoryCreation.directoryId) delete form.directoryCreation
 }
@@ -201,10 +234,12 @@ function submit() {
         </div>
         <div v-if="showCloud && cloud" class="cloud-picker">
           <div class="cloud-path"><button v-for="p in cloud.path" :key="p.id" type="button" class="link" @click="browse(p.id)">{{ p.name || '/' }} /</button></div>
-          <button v-for="item in cloud.items" :key="item.id" type="button" class="folder-option" @click="browse(item.id)"><Icon name="folder" />{{ item.name }}<Icon name="arrow" :size="15" /></button>
+          <p class="hint">单击选中，双击或点击右侧箭头进入</p>
+          <CloudDirectoryRows :items="cloud.items" :selected-id="selectedCloud?.id" :disabled="loading || busy || cloudFailed" @select="selectedCloud = $event" @enter="browse" />
           <p v-if="!cloud.items.length" class="hint">此目录下没有子目录</p>
           <button v-if="cloud.nextCursor" type="button" class="link" @click="browse(cloud.path.at(-1)!.id, cloud.nextCursor)">加载更多</button>
-          <div class="form-footer"><button type="button" class="button secondary" @click="showCloud = false">关闭</button><button type="button" class="button primary" @click="selectCloud">选用当前目录</button></div>
+          <p class="hint cloud-target-path">保存到：{{ cloudTargetPath }}</p>
+          <div class="form-footer"><button type="button" class="button secondary" @click="showCloud = false">关闭</button><button type="button" class="button primary" :disabled="cloudFailed" @click="selectCloud">{{ selectedCloud ? '保存到选中的文件夹' : '保存到当前文件夹' }}</button></div>
         </div>
       </section>
       <section v-if="once && form.cleanup && form.work.tmdbId && form.title" class="panel form-section once-cleanup">
@@ -219,6 +254,7 @@ function submit() {
   <DirectoryCreateDialog v-if="creationDialog" :input="creationDialog.input" :category-label="creationDialog.categoryLabel" @close="creationDialog = undefined" @created="createdFolders" />
 </template>
 <style scoped>
+.cloud-target-path{overflow-wrap:anywhere;margin-top:12px}
 .section-heading{margin-bottom:18px}
 .cleanup-days{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:16px 0}
 .cleanup-days input{width:80px;margin:0;text-align:center}

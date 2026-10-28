@@ -42,7 +42,7 @@ export type PublicationDraft = {
   directoryId?: string
   /** 选择时的展示路径；上传始终使用固定目录 ID。 */
   directoryPath?: string
-  progress?: { stage: string; phase?: 'hashing' | 'uploading' | 'verifying' | 'reporting'; downloadPercent: number; uploadPercent: number; uploadedBytes: number; sizeBytes?: number; error: string; errorDetails?: import('./retry').FailureDetails; synced: boolean; transfer?: UploadTransfer; failure?: { id: string; retryable: boolean; retryAfterMs?: number } }
+  progress?: { stage: string; phase?: 'probing' | 'hashing' | 'uploading' | 'verifying' | 'reporting'; awaitingManual?: boolean; autoUploadBlocked?: boolean; canRelink?: boolean; downloadPercent: number; uploadPercent: number; uploadedBytes: number; sizeBytes?: number; error: string; errorDetails?: import('./retry').FailureDetails; synced: boolean; transfer?: UploadTransfer; failure?: { id: string; retryable: boolean; retryAfterMs?: number } }
   ed2k?: ED2KProgress
   retention?: RetentionProgress
   categoryLabel: string
@@ -62,11 +62,21 @@ export function publicationMissing(draft: PublicationDraft): string[] {
   return [!draft.binding.sourceAccount && '绑定源账号', !draft.workTarget.tmdbId && !draft.workTarget.sourceWorkId && '平台作品 ID', !draft.workTarget.category && '资源分类'].filter(Boolean) as string[]
 }
 
+/** 上传前必须有成品的真实规格和大小；缺失或失败的旧记录允许从本地补检。 */
+export function publicationMediaReady(measured?: CompletedMedia): measured is CompletedMedia {
+  const media = measured?.media
+  return media?.status === 'probed' && Number.isSafeInteger(media.width) && media.width! > 0
+    && Number.isSafeInteger(media.height) && media.height! > 0 && !!media.codec?.trim()
+    && Number.isSafeInteger(measured?.file.size) && measured!.file.size > 0
+}
+
 export function publicationStage(draft: PublicationDraft): string {
   const missing = publicationMissing(draft)
   if (missing.length) return `待补全${missing.join('、')}`
   const p = draft.progress
   if (!p) return draft.output ? '等待上传' : '等待下载'
+  if (p.awaitingManual) return '等待手动上传'
+  if (p.phase === 'probing') return '检测媒体规格'
   if (p.stage === 'processing' && draft.output) return p.phase === 'hashing' ? '计算文件校验' : '等待上传'
   if (p.stage === 'uploading') return ({ hashing: '计算文件校验', uploading: '上传中', verifying: '核验网盘文件', reporting: '登记资源' })[p.phase ?? 'uploading']
   return ({ queued: '等待下载', downloading: '下载中', processing: '成品处理中', paused: '上传已暂停', failed: '上传失败', cancelled: '上传已取消', completed: '上传完成' } as Record<string, string>)[p.stage] ?? p.stage
@@ -79,14 +89,14 @@ export function publicationStatus(draft?: PublicationDraft): string {
   if (missing.length) return `待补全：${missing.join('、')}`
   if (draft.progress) {
     const p = draft.progress
+    if (p.awaitingManual) return '此任务等待手动上传'
     const labels: Record<string, string> = { queued: '等待下载', downloading: '下载中', processing: '成品处理中', hashing: '计算文件校验', uploading: '上传中', paused: '发布已暂停', failed: '发布失败', cancelled: '发布已取消', completed: '已上报资源目录' }
     const transfer = p.stage === 'uploading' && p.phase === 'uploading' ? p.transfer : undefined
     const percent = transfer && p.sizeBytes ? Math.min(100, transfer.sentBytes / p.sizeBytes * 100) : p.uploadPercent
     const speed = transfer ? ` · ${uploadBytes(transfer.bytesPerSecond)}/s · 已发送 ${uploadBytes(transfer.sentBytes)} / ${uploadBytes(p.sizeBytes ?? 0)} · 剩余${uploadRemaining(transfer.etaSeconds)}` : ''
-    return `${p.phase === 'hashing' ? '计算文件校验' : labels[p.stage] ?? p.stage}${p.stage === 'uploading' ? ` ${percent.toFixed(1)}%` : ''}${speed}${p.error ? ` · ${p.error}` : p.synced ? '' : ' · 等待同步'}`
+    return `${p.phase === 'probing' ? '检测媒体规格' : p.phase === 'hashing' ? '计算文件校验' : labels[p.stage] ?? p.stage}${p.stage === 'uploading' ? ` ${percent.toFixed(1)}%` : ''}${speed}${p.error ? ` · ${p.error}` : p.synced ? '' : ' · 等待同步'}`
   }
   if (!draft.output) return '待下载完成检测'
-  const media = draft.measured?.media
-  if (media?.status !== 'probed' || !media.width || !media.height || !media.codec || !draft.measured?.file.size) return '媒体规格待检查'
+  if (!publicationMediaReady(draft.measured)) return '媒体规格待检查'
   return '发布信息已准备'
 }

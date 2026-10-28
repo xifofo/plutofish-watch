@@ -18,7 +18,7 @@ const filtered = computed(() => [...props.jobs].reverse().filter(j =>
 const visible = computed(() => filtered.value.slice(0, props.compact ? 6 : page.value * 40))
 const size = (n: number) => n >= 1073741824 ? `${(n / 1073741824).toFixed(2)} GB` : `${(n / 1048576).toFixed(1)} MB`
 const percent = (job: WatchJob) => Math.max(0, Math.min(100, job.transfer && job.signature.size > 0 ? job.transfer.sentBytes / job.signature.size * 100 : job.percent))
-const phase = (j: WatchJob) => j.status === 'failed' && j.retry?.nextAt ? '等待自动重试' : j.versionReview && j.status === 'review' ? (j.versionReview.sourceRequired ? '待确认来源' : '待确认版本') : j.reused && j.status === 'completed' ? '已复用' : ({ checking: '检查是否已上传', hashing: '计算文件校验', uploading: j.reused ? '复用已有文件' : '上传中', verifying: '核验网盘文件', reporting: '登记资源' })[j.phase ?? ''] || labels[j.status] || j.status
+const phase = (j: WatchJob) => j.status === 'failed' && j.retry?.nextAt ? '等待自动重试' : j.versionReview && j.status === 'review' ? (j.versionReview.sourceRequired ? '待确认来源' : '待确认版本') : j.reused && j.status === 'completed' ? '已复用' : ({ probing: '检测媒体规格', checking: '检查是否已上传', hashing: '计算文件校验', uploading: j.reused ? '复用已有文件' : '上传中', verifying: '核验网盘文件', reporting: '登记资源' })[j.phase ?? ''] || labels[j.status] || j.status
 const ed2kLabel = (j: WatchJob) => j.ed2k?.state === 'running' ? `ED2K ${Math.floor(j.ed2k.pct * 100)}%`
   : j.ed2k?.state === 'done' ? (j.ed2kSaved ? 'ED2K 已同步' : 'ED2K 待同步')
   : j.ed2k?.state === 'failed' ? 'ED2K 待重试' : 'ED2K 排队中'

@@ -11,10 +11,14 @@ export type FileConfig = {
   gatewayProxy?: string
   /** Desktop service proxy override; empty follows the system proxy. Independent of TUI routing. */
   desktopProxy?: string
+  /** Desktop: automatically upload completed downloads to the bound PlutoFish source. */
+  plutofishAutoUpload?: boolean
   outDir: string
   releaseGroup: string
-  /** Legacy task/short-video naming preference; current movie/series templates omit episode titles. */
+  /** Retired movie/series preference, still used for legacy and short-video naming. */
   includeEpisodeTitle?: boolean
+  /** Opt-in for episode titles in the current movie/series filename template. */
+  filenameEpisodeTitle?: boolean
   tmdbKey: string
   tmdbLang: string
   /** Optional HTTP(S) proxy used only for TMDB requests. */
@@ -198,9 +202,11 @@ export function defaultConfig(): FileConfig {
     key: '',
     gatewayProxy: '',
     desktopProxy: '',
+    plutofishAutoUpload: true,
     outDir: '',
     releaseGroup: 'PFWEB',
     includeEpisodeTitle: true,
+    filenameEpisodeTitle: false,
     tmdbKey: '',
     tmdbLang: 'zh-CN',
     tmdbProxy: '',
@@ -242,6 +248,8 @@ export function loadConfig(): FileConfig {
   const outChanged = ensureOutDir(cfg)
   if (!cfg.releaseGroup) cfg.releaseGroup = 'PFWEB'
   cfg.includeEpisodeTitle = cfg.includeEpisodeTitle !== false
+  cfg.filenameEpisodeTitle = cfg.filenameEpisodeTitle === true
+  cfg.plutofishAutoUpload = cfg.plutofishAutoUpload !== false
   if (!cfg.hongguoFmt) cfg.hongguoFmt = 'mkv'
   if (!cfg.huangguoFmt) cfg.huangguoFmt = 'mkv'
   delete (cfg as unknown as Record<string, unknown>).ffmpeg

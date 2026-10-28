@@ -14,7 +14,7 @@ type Options = {
   verify?: (input: PlutoFishInput, signal: AbortSignal) => Promise<PublisherIdentity>
   changed?: () => void
   intervalMs?: number
-  /** 监控器可自动重连；下载器双重鉴权保持原手动恢复行为。 */
+  /** 可恢复的网络故障自动重连；未验证及撤权状态仍禁止受保护操作。 */
   autoReconnect?: boolean
   retryBaseMs?: number
   retryMaxMs?: number
@@ -238,7 +238,9 @@ export class PlutoFishConnection {
     this.clearTimer()
     if (!background) { this.cancelRequests(); this.monitoring = false; this.retryInput = undefined; this.failures = 0 }
     this.verifying = true
-    this.state = { ...this.state, status: background && this.ready ? 'verified' : 'checking', error: '', reconnect: undefined }
+    // Keep the retry context while an attempt is in flight, so a temporary
+    // outage cannot briefly look like a new, unauthenticated connection.
+    this.state = { ...this.state, status: background && this.ready ? 'verified' : 'checking', error: '', reconnect: background ? this.state.reconnect : undefined }
     this.options.changed?.()
     let candidate: PlutoFishInput | undefined
     try {

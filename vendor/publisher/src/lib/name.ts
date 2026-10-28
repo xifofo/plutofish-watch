@@ -14,8 +14,10 @@ export type Naming = {
   year: number
   season: number
   episode: number
-  /** Legacy filename subtitle; current movie/series templates omit it. */
+  /** Episode subtitle, sanitized and shortened without changing the technical suffix. */
   episodeTitle?: string
+  /** Current templates require an explicit opt-in; old saved tasks keep omitting titles. */
+  filenameEpisodeTitle?: boolean
   height: number
   codec: string
   audio?: string
@@ -46,6 +48,8 @@ export function sourceTag(provider: string): string {
     case 'friday': return 'FRIDAY'
     case 'linetv': return 'LINETV'
     case 'dsnp': return 'DSNP'
+    case 'appletvplus': return 'ATVP'
+    case 'crunchyroll': return 'CR'
     default: return provider ? provider.slice(0, 3).toUpperCase() : 'WEB'
   }
 }
@@ -143,7 +147,7 @@ export function tierHeight(width: number, height: number): number {
 export function filename(n: Naming): string {
   const parts: string[] = []
   const template = n.namingOrder === 'title-year' && n.kind !== 'short'
-  const subtitle = template ? '' : episodeTitle(n.episodeTitle || '', n.title, n.nameDots, n.filenameTitle || '')
+  const subtitle = template && !n.filenameEpisodeTitle ? '' : episodeTitle(n.episodeTitle || '', n.title, n.nameDots, n.filenameTitle || '')
   let subtitleIndex = -1
   const addSubtitle = () => {
     if (!subtitle) return
@@ -246,7 +250,7 @@ export function completedFilename(n: Naming, media: MediaSpecs, marker?: 'HQ' | 
   const parts = [dots(n.filenameTitle || n.title || n.nameDots)]
   const template = n.namingOrder === 'title-year' && n.kind !== 'short'
   if (n.namingOrder === 'title-year' && n.year > 0) parts.push(String(n.year))
-  const subtitle = template ? '' : episodeTitle(n.episodeTitle || '', n.title, n.nameDots, n.filenameTitle || '')
+  const subtitle = template && !n.filenameEpisodeTitle ? '' : episodeTitle(n.episodeTitle || '', n.title, n.nameDots, n.filenameTitle || '')
   let subtitleIndex = -1
   if (n.kind === 'show') {
     const season = Number.isSafeInteger(n.season) && n.season >= 0 ? n.season : 1

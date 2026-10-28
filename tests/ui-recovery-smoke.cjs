@@ -89,8 +89,11 @@ async function until(fn, timeout = 25000) {
   await until(async () => (await snapshot()).connection.status === 'verified')
   assert.equal((await snapshot()).jobs[0].status, 'paused')
   await click('传输任务'); await click('继续')
-  await until(() => js("document.body.innerText.includes('等待自动重试')"))
-  assert.equal((await snapshot()).jobs[0].retry.attempt, 2)
+  await until(async () => calls.filter(c => c.endpoint === 'files/report').length === 2
+    && (await snapshot()).jobs[0].status === 'failed'
+    && await js("document.body.innerText.includes('等待自动重试')"))
+  // 手动继续会重置自动重试次数；只统计本轮失败，等待实际请求完成再断言。
+  assert.equal((await snapshot()).jobs[0].retry.attempt, 1)
   await until(async () => { const job = (await snapshot()).jobs[0]; return job.status === 'completed' && job.synced && job.ed2kSaved })
   const done = (await snapshot()).jobs[0]
   assert.equal(done.fileKey, original.fileKey)

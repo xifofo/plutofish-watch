@@ -86,14 +86,14 @@ export function parseReleaseSpecs(name: string, fallbackHeight?: number) {
     range: dynamic ? normalizeRange(dynamic) : undefined, rangeTag: dynamic, fps: fps ? Math.round(Number(fps)) : undefined, extras }
 }
 
-/** 两端共用同一匹配规则：完整规格与来源一致，兼容旧版本缺失音轨，保留特殊标签差异。 */
-export function matchingReleases(items: ReleaseOption[], name: string): ReleaseOption[] {
+/** 两端共用同一匹配规则；下载前预览可缺少编码，成品仍要求完整编码，已知差异始终保留。 */
+export function matchingReleases(items: ReleaseOption[], name: string, options: { allowMissingCodec?: boolean } = {}): ReleaseOption[] {
   const expected = parseReleaseSpecs(name)
-  if (!expected?.codec || !expected.type) return []
+  if (!expected?.type || (!expected.codec && !options.allowMissingCodec)) return []
   return items.filter(row => {
     if (row.status === 'unpublished') return false
     const actual = parseReleaseSpecs(row.name)
-    if (!actual || actual.height !== expected.height || actual.codec !== expected.codec || actual.platform !== expected.platform
+    if (!actual?.codec || actual.height !== expected.height || (expected.codec && actual.codec !== expected.codec) || actual.platform !== expected.platform
       || actual.type !== expected.type || actual.extras !== expected.extras || actual.fps !== expected.fps
       || actual.group.toUpperCase() !== expected.group.toUpperCase()) return false
     const resolution = /^(\d{3,4})p$/i.exec(row.resolution.trim())
