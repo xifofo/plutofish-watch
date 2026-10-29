@@ -85,13 +85,16 @@ export class PublicationProofs {
       const file = state.checkpoint!.file
       return [`${file.sha1}:${file.size}`, state] as const
     }))
-    let unavailable = false
+    let unavailable = false, skipped = false
     const hashes = new Map<string, Promise<string>>()
     const processJob = async (job: ProofJob) => {
       signal.throwIfAborted()
       // 同一内容可能重复发布；服务端选出的上传记录已不在本机时，可使用同绑定下身份相同的成品。
       const state = byKey.get(job.taskKey) ?? byFile.get(`${job.sha1}:${job.sizeBytes}`)
       const file = state?.checkpoint?.file
+      // 同 Key 的其他客户端也会收到待办；没有本机成品记录不等于发布端整体不可用。
+      // 刚登记成功但本机尚未切到 completed 的任务也先跳过，下一轮用最新状态重查。
+      if (!state || !file || state.retention?.retiring) { skipped = true; return }
       if (file && (job.sha1 !== file.sha1 || job.sizeBytes !== file.size)) throw new Error('PlutoFish 校验任务文件身份不一致')
       if ((this.unavailableUntil.get(job.id) ?? 0) > Date.now()) { unavailable = true; return }
       if (state) this.using.set(state, (this.using.get(state) ?? 0) + 1)
@@ -99,7 +102,6 @@ export class PublicationProofs {
       try {
         let signValue: string
         try {
-          if (!state || !file || state.retention?.retiring) throw new Error('本机没有该成品的发布记录')
           releaseFile = useLocalFile(state.draft.output)
           // 每页同内容同范围只读取一次；页内复用随本次轮询结束释放，服务端不跨任务缓存。
           const cacheKey = `${file.sha1}:${file.size}:${job.signCheck}`
@@ -128,7 +130,7 @@ export class PublicationProofs {
           await this.connection.request(binding, 'range-proofs/report', { id: job.id, taskKey: job.taskKey, unavailable: true }, signal)
           unavailable = true
           this.unavailableUntil.set(job.id, Date.now() + 60_000)
-          if (state) this.changed(state, '本地成品不可用，已通知服务端处理校验')
+          if (state) this.changed(state, '本机成品暂不可用，其他客户端仍可继续校验')
           return
         }
         const result = await this.connection.request<{ accepted: boolean }>(binding, 'range-proofs/report', { id: job.id, taskKey: job.taskKey, signValue }, signal)
@@ -161,7 +163,9 @@ export class PublicationProofs {
 
     // 整页处理成功才前移。不可用待办可能等待手动执行，避免对它反复立即查询。
     this.after = reply.nextCursor ?? ''
-    this.nextPoll = this.after || (this.waitSupported && !unavailable) ? 0 : Date.now() + 15_000
+    // 其他客户端的待办会让长轮询立即返回；跳过后短暂退避，兼顾刚完成发布的状态同步。
+    this.nextPoll = this.after ? 0 : skipped && this.waitSupported ? Date.now() + 1000
+      : this.waitSupported && !unavailable ? 0 : Date.now() + 15_000
     // 代理或异常服务立即返回空长轮询时防止忙循环；正常 25 秒空返回后立即续接。
     if (waiting && this.waitSupported && !reply.jobs.length && Date.now() - started < 500) this.nextPoll = Date.now() + 2000
   }

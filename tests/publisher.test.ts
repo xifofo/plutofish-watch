@@ -1114,6 +1114,26 @@ test('服务端已有内容继续共享后续流程，补记 ED2K 并响应客�
   expect((await readFile(f.file)).length).toBe(f.job.signature.size)
 })
 
+test('同 Key 的其他客户端待办不会被 Watch 回报不可用，本机完成后仍能提供摘要', async () => {
+  let published: { fileKey: string; sha1: string; sizeBytes: number } | undefined
+  let accepted = false
+  const foreign = { id: 'a'.repeat(32), taskKey: 'gvs-f1:another-client', sha1: 'F'.repeat(40), sizeBytes: 1000, signCheck: '0-31' }
+  const f = await setup({ reply: (path, body) => {
+    if (path === 'files/report') published = body
+    if (path === 'range-proofs/report' && body.id === 'b'.repeat(32) && body.signValue) accepted = true
+    if (path === 'range-proofs/pending') return { body: { jobs: [foreign, ...(published && !accepted ? [{
+      id: 'b'.repeat(32), taskKey: published.fileKey, sha1: published.sha1, sizeBytes: published.sizeBytes, signCheck: '0-31',
+    }] : [])], waitSupported: true } }
+    return undefined
+  } })
+  await until(f.publisher, () => f.job.status === 'completed' && accepted)
+  const reports = f.calls.filter(call => call.path === 'range-proofs/report')
+  expect(reports).toHaveLength(1)
+  expect(reports[0]!.body).toEqual({ id: 'b'.repeat(32), taskKey: published!.fileKey,
+    signValue: createHash('sha1').update((await readFile(f.file)).subarray(0, 32)).digest('hex').toUpperCase() })
+  expect(f.calls.filter(call => call.path === 'range-proofs/pending').length).toBeLessThan(10)
+})
+
 test('服务端冲突或查重响应损坏时停止，不能当作不存在而上传', async () => {
   for (const result of [{ status: 'conflict' }, { status: 'bad' }, { status: 'existing' }]) {
     const f = await setup({ check: () => result })
