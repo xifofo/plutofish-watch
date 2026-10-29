@@ -12,6 +12,9 @@ export interface ProofJob {
   signCheck: string
 }
 
+/** 包括本地读取和回执的总在途上限；单个范围最多 8 MiB，不随订阅人数创建工作协程。 */
+export const PUBLICATION_PROOF_CONCURRENCY = 16
+
 export class PublicationProofs {
   private nextPoll = 0
   private after = ''
@@ -19,6 +22,9 @@ export class PublicationProofs {
   private waitSupported = false
   private readonly using = new Map<PublicationState, number>()
   private readonly unavailableUntil = new Map<string, number>()
+  private readonly active = new Map<string, Promise<void>>()
+  private readonly restoring = new Map<string, Promise<Awaited<ReturnType<typeof fingerprint>>>>()
+  private replay = 0
 
   constructor(private readonly connection: PlutoFishConnection,
     private readonly changed: (state: PublicationState, message?: string) => void,
@@ -30,21 +36,35 @@ export class PublicationProofs {
 
   /** 独立收件循环：长等待不占用上传/快照同步循环，取消时同时结束请求与重连等待。 */
   async run(states: () => PublicationState[], signal: AbortSignal): Promise<void> {
-    while (!signal.aborted) {
-      try { await this.tick(states, signal) } catch { /* 回执和待办持久化，断线后重新领取。 */ }
-      if (signal.aborted) return
-      const delay = this.connection.ready ? Math.max(50, this.nextPoll - Date.now()) : 2000
-      await new Promise<void>(resolve => {
-        const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve() }
-        const timer = setTimeout(finish, delay)
-        signal.addEventListener('abort', finish, { once: true })
-        if (signal.aborted) finish()
-      })
+    try {
+      while (!signal.aborted) {
+        // 满额时等待一个真实任务释放，避免重复领取、无限排队或为了空闲槽忙轮询。
+        if (this.active.size >= PUBLICATION_PROOF_CONCURRENCY) {
+          await Promise.race(this.active.values())
+          continue
+        }
+        try { await this.tick(states, signal, true) } catch {
+          // 收件失败也从首页恢复，短暂退避不会白白消耗旧版 15 秒轮询周期。
+          this.after = ''
+          this.nextPoll = Date.now() + 1000
+        }
+        if (signal.aborted) return
+        const delay = this.connection.ready ? Math.max(50, this.nextPoll - Date.now()) : 2000
+        await new Promise<void>(resolve => {
+          const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve() }
+          const timer = setTimeout(finish, delay)
+          signal.addEventListener('abort', finish, { once: true })
+          if (signal.aborted) finish()
+        })
+      }
+    } finally {
+      // 关闭客户端时，所有读取和回执退出后才能清理文件及发布清单。
+      await Promise.all(this.active.values())
     }
   }
 
-  /** 先协商长轮询能力，旧服务端保持 15 秒轮询；翻页立即查询，首轮不会发送未知字段。 */
-  async tick(states: PublicationState[] | (() => PublicationState[]), signal: AbortSignal): Promise<void> {
+  /** 后台模式只领取当前空闲槽，回执未全部结束也可继续收件；单步模式等待本页以便离线调用。 */
+  async tick(states: PublicationState[] | (() => PublicationState[]), signal: AbortSignal, background = false): Promise<void> {
     signal.throwIfAborted()
     if (!this.connection.ready) return
     const view = this.connection.view(), source = view.identity?.sourceAccount
@@ -61,12 +81,15 @@ export class PublicationProofs {
     if (Date.now() < this.nextPoll) return
     this.nextPoll = Date.now() + 15_000
     for (const [id, until] of this.unavailableUntil) if (until <= Date.now()) this.unavailableUntil.delete(id)
-    const waiting = this.waitSupported && !this.after
+    const after = this.after, generation = this.replay
+    const waiting = this.waitSupported && !after
     const started = Date.now()
     const reply = await this.connection.request<{ jobs: ProofJob[]; nextCursor?: string; waitSupported?: boolean }>(binding, 'range-proofs/pending',
-      { after: this.after, ...(waiting ? { waitSeconds: 25 } : {}) }, signal)
+      { after, ...(waiting ? { waitSeconds: 25 } : {}) }, signal)
+    // 请求期间有旧回执失败时保留首页重查，不让迟到的分页响应覆盖重放位置。
+    if (generation !== this.replay || bindingKey !== this.bindingKey) return
     if (!Array.isArray(reply.jobs) || reply.jobs.length > 100 || (reply.nextCursor !== undefined && typeof reply.nextCursor !== 'string')) throw new Error('PlutoFish 校验任务回执无效')
-    let previous = this.after
+    let previous = after
     for (const job of reply.jobs) {
       if (!job || !/^[a-f0-9]{32}$/.test(job.id) || job.id <= previous || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(job.taskKey) ||
         !/^[A-F0-9]{40}$/.test(job.sha1) || !Number.isSafeInteger(job.sizeBytes) || job.sizeBytes < 1 || typeof job.signCheck !== 'string') throw new Error('PlutoFish 校验任务回执无效')
@@ -113,14 +136,24 @@ export class PublicationProofs {
               catch (error) {
                 // 先验证范围，再处理恢复原文件导致的 mtime 变化；完整 SHA1 相符才允许继续。
                 if (!(error instanceof Error) || error.message !== '成品已改变，不能复用原上传断点') throw error
-                const restored = await fingerprint(state.draft.output, signal)
+                // 不同范围同时发现文件身份变化时，共享一次完整文件读取，避免十六路重扫整部影片。
+                const path = state.draft.output
+                const restoreKey = `${bindingKey}:${path}`
+                let restoring = this.restoring.get(restoreKey)
+                if (!restoring) {
+                  restoring = fingerprint(path, signal).finally(() => { this.restoring.delete(restoreKey) })
+                  this.restoring.set(restoreKey, restoring)
+                }
+                const restored = await restoring
                 if (restored.size !== expected.size || restored.sha1 !== expected.sha1) throw new Error('成品内容已经改变')
-                state.checkpoint!.file = restored
-                this.save(state)
+                if (state.checkpoint!.file !== restored) {
+                  state.checkpoint!.file = restored
+                  this.save(state)
+                }
                 return challengeHash(state.draft.output, job.signCheck, restored, signal)
               }
             })()
-            // 共享进行中的计算，两个工作协程遇到同一范围也只读一次。
+            // 共享进行中的计算，多个工作协程遇到同一范围也只读一次。
             hashes.set(cacheKey, pending)
           }
           signValue = await pending
@@ -139,7 +172,7 @@ export class PublicationProofs {
         if (state) this.changed(state)
       } finally {
         releaseFile?.()
-        // 同一成品可能同时服务两个挑战；最后一个处理者退出后才允许清理清单。
+        // 同一成品可能同时服务多个挑战；最后一个处理者退出后才允许清理清单。
         if (state) {
           const remaining = (this.using.get(state) ?? 1) - 1
           if (remaining) this.using.set(state, remaining)
@@ -147,25 +180,46 @@ export class PublicationProofs {
         }
       }
     }
-    // 每个发布端最多两个本地校验任务，回执也在名额内，避免网络变慢时无限堆积摘要。
-    // 任一任务出错后停止领取本页后续任务；等另一个已开始的任务结束再退出，不遗留后台读写。
+    // 回执占有界名额，但不阻挡其他空闲槽继续翻页。数据库只返回未确认的任务，
+    // 客户端按绑定和挑战去重；失败后从首页重查，绝不因前移游标丢掉未确认的回执。
     let index = 0, failed = false
     let failure: unknown
-    const worker = async () => {
-      while (!failed && index < reply.jobs.length) {
-        const job = reply.jobs[index++]!
-        try { await processJob(job) }
-        catch (error) { if (!failed) { failed = true; failure = error } }
+    const startedJobs: Promise<void>[] = []
+    while (!failed && index < reply.jobs.length) {
+      const job = reply.jobs[index]!
+      const key = `${bindingKey}:${job.id}`
+      if (this.active.has(key)) { index++; continue }
+      if (this.active.size >= PUBLICATION_PROOF_CONCURRENCY) {
+        if (background) break
+        await Promise.race(this.active.values())
+        continue
       }
+      index++
+      const work = processJob(job).catch(error => {
+        if (!failed) { failed = true; failure = error }
+        if (background && bindingKey === this.bindingKey) {
+          this.replay++
+          this.after = ''
+          this.nextPoll = Date.now() + 1000
+        }
+      }).finally(() => { this.active.delete(key) })
+      this.active.set(key, work)
+      startedJobs.push(work)
     }
-    await Promise.all([worker(), worker()])
-    if (failed) throw failure
+    if (!background) {
+      await Promise.all(startedJobs)
+      if (failed) throw failure
+    }
+    if (generation !== this.replay || bindingKey !== this.bindingKey) return
 
-    // 整页处理成功才前移。不可用待办可能等待手动执行，避免对它反复立即查询。
-    this.after = reply.nextCursor ?? ''
-    // 其他客户端的待办会让长轮询立即返回；跳过后短暂退避，兼顾刚完成发布的状态同步。
+    // 部分页只前移到实际领取的位置；未领取的挑战留在服务端，不在本机堆积。
+    if (index < reply.jobs.length) {
+      if (index > 0) this.after = reply.jobs[index - 1]!.id
+    } else this.after = reply.nextCursor ?? ''
     this.nextPoll = this.after ? 0 : skipped && this.waitSupported ? Date.now() + 1000
-      : this.waitSupported && !unavailable ? 0 : Date.now() + 15_000
+      : this.waitSupported ? (unavailable ? Date.now() + 1000 : 0) : Date.now() + 15_000
+    // 只看到仍在等待回执的挑战时小幅退避；新任务不被单个慢回执挡住整页。
+    if (background && reply.jobs.length && !startedJobs.length) this.nextPoll = Date.now() + 250
     // 代理或异常服务立即返回空长轮询时防止忙循环；正常 25 秒空返回后立即续接。
     if (waiting && this.waitSupported && !reply.jobs.length && Date.now() - started < 500) this.nextPoll = Date.now() + 2000
   }
