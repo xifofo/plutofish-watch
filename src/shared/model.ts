@@ -85,7 +85,7 @@ export type WatchJob = {
   ed2k?: { state: 'queued' | 'running' | 'done' | 'failed'; pct: number; link: string; message?: string }
   ed2kSaved?: boolean
   retention?: RetentionProgress
-  /** 每个文件的版本一经确认即持久化，重试与重启不重新归类。 */
+  /** 每个文件的版本持久化；未登记的旧版跨季缓存须确认归属后重新选择。 */
   release?: {
     id?: string; name: string
     /** 待创建版本使用稳定键；服务端登记时创建，后续集数复用同一绑定。 */

@@ -95,6 +95,27 @@ test('暂停尚未稳定的文件后继续，不能绕过稳定等待', async ()
   expect(job.manuallyPaused).toBe(false)
 })
 
+test('旧版跨季失败任务重试须确认归属，确认后清除旧版本并按文件重新归类', async () => {
+  const { service, root, job, observation } = await setup()
+  root.seasonNumber = 2
+  job.status = 'failed'; job.episodeNumber = 1
+  job.release = { id: 'a'.repeat(32), name: 'S02.1080p.NF.WEB-DL.AVC' }
+  job.targetKey = 'old-target'
+  observation().stableSince = Date.now() - 20_000
+
+  await service.job({ id: job.id, action: 'resume' })
+  expect(job.status).toBe('review')
+  expect(job.seasonReview).toContain('旧版本')
+  expect(job.release?.id).toBe('a'.repeat(32))
+  await expect(service.job({ id: job.id, action: 'confirm', episodeNumber: 1 })).rejects.toThrow('确认季号')
+  await service.job({ id: job.id, action: 'confirm', seasonNumber: 1, episodeNumber: 1 })
+
+  expect(job).toMatchObject({ status: 'queued', seasonNumber: 1, episodeNumber: 1, seasonConfirmed: true })
+  expect(job.release).toBeUndefined(); expect(job.targetKey).toBeUndefined()
+  expect(service.store.rootFor(job)).toMatchObject({ seasonNumber: 1, versionMode: 'auto', releaseId: '' })
+  expect(root.seasonNumber).toBe(2)
+})
+
 test('等待来源确认的任务暂停再继续，仍显示原确认表单', async () => {
   const { service, job, observation } = await setup()
   observation().stableSince = Date.now() - 20_000

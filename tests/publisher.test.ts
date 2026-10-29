@@ -178,6 +178,69 @@ test('单个电影按电影查询版本并登记，不发送季号集号；来�
   }
 })
 
+test('一次性混传两季、两种画质和制作组，各自登记版本且同集号不冲突', async () => {
+  const f = await setup({ releases: () => releasePage([]) })
+  f.root.mode = 'once'; f.root.versionMode = 'auto'; f.root.releaseId = ''
+  f.root.cleanup = { enabled: false, days: 1 }
+  // 从第二季开始；整批默认季、发现顺序和首个文件不能决定其他文件的版本。
+  f.root.seasonNumber = 2
+  f.store.data.jobs = []
+  const samples = [
+    [2, 1, 720, 'Ftang'], [1, 1, 720, 'Ftang'], [1, 1, 1080, 'Ftang'], [2, 1, 1080, 'Ftang'],
+    [2, 1, 720, 'Other'], [1, 1, 720, 'Other'], [2, 2, 720, 'Ftang'], [1, 2, 720, 'Ftang'],
+  ] as const
+  const files: string[] = []
+  for (const [season, episode, height, group] of samples) {
+    const folder = join(f.root.path, `Season 0${season}`)
+    await mkdir(folder, { recursive: true })
+    const file = join(folder, `Platonic.S0${season}E0${episode}.${height}p.APP.WEB-DL.AVC-${group}.mp4`)
+    sampleVideo(file, height === 720 ? '1280x720' : '1920x1080')
+    files.push(file)
+  }
+  f.root.batch = { files }
+  const watcher = new DirectoryWatcher(f.store, () => {}, async () => {}, e => { throw e })
+  disposers.push(() => watcher.close())
+  await watcher.scan()
+  for (const observation of Object.values(f.store.data.observations[f.root.id])) observation.stableSince = Date.now() - 20_000
+  await watcher.scan()
+  await until(f.publisher, () => f.store.data.jobs.every(job => job.status === 'completed'))
+
+  const reports = f.calls.filter(call => call.path === 'files/report')
+  expect(reports).toHaveLength(samples.length)
+  expect(f.createdReleases.size).toBe(6)
+  for (const [index, [season, episode, height, group]] of samples.entries()) {
+    const job = f.store.data.jobs.find(item => item.path === files[index])!
+    const report = reports.find(call => call.body.fileKey === job.fileKey)!.body
+    expect([job.seasonNumber, job.episodeNumber]).toEqual([season, episode])
+    expect(report.releaseTarget.seasonNumber).toBe(season)
+    expect(report.episodeNumber).toBe(episode)
+    expect(report.releaseTarget.name).toBe(`S0${season}.${height}p.APP.WEB-DL.SDR.AVC-${group}`)
+  }
+  expect(new Set(f.store.data.jobs.map(job => job.targetKey)).size).toBe(samples.length)
+  const restored = new WatchStore(f.store.path)
+  expect(restored.data.jobs.map(job => [job.seasonNumber, job.release?.key])).toEqual(
+    f.store.data.jobs.map(job => [job.seasonNumber, job.release?.key]))
+})
+
+test('旧版排队文件已有跨季版本也先确认，不开始上传；已登记旧文件保留归属', async () => {
+  const f = await setup()
+  f.root.seasonNumber = 2
+  f.job.release = { id: f.root.releaseId, name: 'S02.测试版本' }
+  await f.publisher.tick()
+  expect(f.job.status).toBe('review')
+  expect(f.job.seasonReview).toContain('文件属于第 1 季')
+  expect(f.job.fileKey).toBeUndefined()
+  expect(f.calls.some(call => ['uploads/prepare', 'tasks/report', 'files/report'].includes(call.path))).toBe(false)
+
+  // 先生成有效发布清单，再移除逐文件季号模拟升级前已登记的数据。
+  f.job.status = 'queued'; f.job.seasonNumber = 2; delete f.job.seasonReview
+  await f.publisher.tick()
+  expect(f.job.fileKey).toBeDefined()
+  delete f.job.seasonNumber
+  await until(f.publisher, () => f.job.status === 'completed')
+  expect(f.calls.find(call => call.path === 'files/report')!.body.releaseTarget.seasonNumber).toBe(2)
+})
+
 test('旧版缺集标题任务升级后沿用任务键，完成任务上报与资源登记', async () => {
   const f = await setup()
   await f.publisher.tick()

@@ -163,8 +163,8 @@ export class WatchPublisher {
     if (this.store.data.jobs.filter(j => ['processing', 'uploading'].includes(j.status) && this.eligible(this.store.rootFor(j))).length >= 4) return
     const job = this.store.data.jobs.find(j => j.status === 'queued' && this.eligible(this.store.data.watches.find(w => w.id === j.watchId)))
     if (!job) return
-    // 兼容升级前已排队但尚未确认版本的文件；已登记的发布清单始终沿用原季。
-    if (job.seasonNumber === undefined && !job.fileKey && !job.release) {
+    // 旧版已缓存版本的文件也需核对季号；已登记的发布清单始终沿用原季。
+    if (job.seasonNumber === undefined && !job.fileKey) {
       resolveJobEpisode(this.store.data.watches.find(w => w.id === job.watchId)!, job)
       if (job.seasonReview) {
         job.status = 'review'; job.error = job.seasonReview; this.store.save(); this.changed()

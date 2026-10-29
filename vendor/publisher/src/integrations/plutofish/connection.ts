@@ -1,6 +1,7 @@
 /** 强制连接状态机：每次启动重验，过期请求不能放行，运行中定时重验。 */
 import { PublisherError, retryableError, retryableHTTP, retryAfter, retryDelay, transportError } from './retry'
 import { failureDetails, httpFailureDetails } from './publication-error'
+import { resourceReportReason } from './report-errors'
 import { UploadRateLimitError } from './upload-pause'
 import { loadPlutoFishConfig, savePlutoFishConfig } from './config.ts'
 import { normalizePlutoFishURL, verifyPublisher } from './client.ts'
@@ -131,6 +132,10 @@ export class PlutoFishConnection {
       const failure = await response.json().catch(() => null) as { error?: { code?: string; fieldErrors?: Record<string, unknown> } } | null
       const diagnostic = httpFailureDetails(path === 'uploads/prepare' ? ({ prepare: '申请上传', complete: '保存上传回执', verify: '核验网盘文件', verify_reuse: '核验历史文件', credentials: '获取上传凭据', token_refresh: '刷新网盘授权' } as Record<string, string>)[response.headers.get('x-plutofish-upload-stage') ?? ''] ?? stage : stage, response, failure?.error?.code)
       requestSignal.throwIfAborted()
+      if (path === 'files/report' && response.status !== 401 && response.status !== 403) {
+        const reason = resourceReportReason(failure?.error?.code)
+        if (reason) throw new PublisherError(`PlutoFish 登记资源失败：${reason.message}（HTTP ${response.status}）`, reason.retryable, retryAfter(response), diagnostic)
+      }
       if (response.status === 422 && path !== 'tmdb/search' && path !== 'tmdb/recognize') {
         // 只展示固定字段名和业务提示，绝不把服务端正文、字段值或供应商凭据带入界面。
         const labels: Record<string, string> = {
@@ -219,7 +224,9 @@ export class PlutoFishConnection {
         this.options.changed?.()
       }
       // 不拼接供应商正文，避免临时凭据、下载地址进入 UI 和运行日志。
-      throw new PublisherError(`PlutoFish ${path === 'tmdb/search' ? '作品搜索' : path === 'releases/query' ? '版本查询' : path === 'directories/create' ? '目录创建（已创建的目录会在重试时复用）' : path === 'directories' ? '目录读取' : '上报或上传调度'}失败（HTTP ${response.status}）`, retryableHTTP(response.status), retryAfter(response), diagnostic)
+      const action = path === 'tmdb/search' ? '作品搜索' : path === 'releases/query' ? '版本查询' : path === 'directories/create' ? '目录创建（已创建的目录会在重试时复用）' : path === 'directories' ? '目录读取' : path === 'files/report' ? '登记资源' : '上报或上传调度'
+      const hint = path === 'files/report' && response.status >= 500 ? '：服务端未提供可识别的具体原因，请凭请求 ID 查询服务端日志' : ''
+      throw new PublisherError(`PlutoFish ${action}失败${hint}（HTTP ${response.status}）`, retryableHTTP(response.status), retryAfter(response), diagnostic)
     }
     let result: T
     try { result = await response.json() as T }

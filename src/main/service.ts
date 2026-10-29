@@ -351,8 +351,14 @@ export class WatchService {
         if ((episode !== undefined || input.action === 'confirm' || job.fileKey)
           && (!Number.isInteger(episode) || episode! < 0 || episode! > 100000)) throw new Error('请填写 0–100000 的集号')
         if (job.fileKey && episode !== job.episodeNumber) throw new Error('已登记任务不能修改集号')
-        if ((job.fileKey || job.release) && season !== root.seasonNumber) throw new Error('已确认版本或登记的任务不能修改季号')
+        const legacySeasonChoice = !job.fileKey && job.release && job.seasonNumber === undefined && job.seasonReview
+          && input.action === 'confirm' && input.seasonNumber !== undefined
+        if ((job.fileKey || job.release) && season !== root.seasonNumber && !legacySeasonChoice) throw new Error('已确认版本或登记的任务不能修改季号')
         if (job.seasonReview && input.action === 'confirm' && input.seasonNumber === undefined) throw new Error('请确认季号和集号')
+        // 只有用户明确确认旧任务归属后才丢弃不适用的版本，重试和暂停本身不改绑定。
+        if (legacySeasonChoice) {
+          delete job.release; delete job.versionReview; delete job.targetKey
+        }
         if (input.seasonNumber !== undefined && input.action === 'confirm') {
           job.seasonNumber = season; job.seasonConfirmed = true; delete job.seasonReview
           if (season !== root.seasonNumber) { delete job.versionReview; delete job.targetKey }
