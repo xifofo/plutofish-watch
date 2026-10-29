@@ -146,10 +146,46 @@ export class WatchPublisher {
     return !!root?.enabled && !!this.store.data.watches.find(w => w.id === root.id)?.enabled && !this.store.data.uploadsPaused && this.connection.ready && !this.closed && !this.fatalError && !this.worker.uploadPaused(root.binding)
   }
 
+  /** 只有正在发布的原任务可以让同内容副本等待；失败、暂停及旧重复记录不占位。 */
+  private publishing(job?: WatchJob): boolean {
+    return !!job?.fileKey && !job.changed && !job.manuallyPaused && ['processing', 'uploading'].includes(job.status)
+      && this.eligible(this.store.rootFor(job))
+  }
+
+  private waitingForDuplicate(job: WatchJob): boolean {
+    if (job.fileKey || !job.duplicateOf || !job.targetKey || !job.sha1) return false
+    const original = this.store.data.jobs.find(other => other.id === job.duplicateOf)
+    return this.publishing(original) && original!.targetKey === job.targetKey && original!.sha1 === job.sha1
+      && original!.signature.size === job.signature.size
+  }
+
+  /** 升级后只重查旧客户端自行拦截的任务；服务端失败及用户的暂停、取消决定保留。 */
+  private recoverLocalDuplicates(): void {
+    let changed = false
+    for (const job of this.store.data.jobs) {
+      if (job.changed || job.manuallyPaused || !this.eligible(this.store.rootFor(job))) continue
+      const oldConflict = job.status === 'failed' && job.error === '同一版本已有该集或电影的其他内容，请使用另一个版本绑定'
+      const original = job.status === 'duplicate' && !job.fileKey
+        ? this.store.data.jobs.find(other => other.id === job.duplicateOf) : undefined
+      const abandonedDuplicate = job.status === 'duplicate' && !job.fileKey
+        && !(original && !original.changed && (original.status === 'completed' || this.publishing(original)))
+      if (!oldConflict && !abandonedDuplicate) continue
+      job.status = 'queued'; job.error = ''
+      delete job.retry; delete job.preparationError; delete job.errorDetails
+      if (!job.fileKey) {
+        delete job.duplicateOf; delete job.reused; delete job.ed2k; delete job.ed2kSaved
+      }
+      job.updatedAt = new Date().toISOString()
+      changed = true
+    }
+    if (changed) { this.store.save(); this.changed() }
+  }
+
   async tick(): Promise<void> {
     if (this.closed || this.fatalError || !this.connection.ready) return
     this.registerBatchDeletions()
     await this.worker.tick()
+    this.recoverLocalDuplicates()
     this.batches.tick()
     this.registerBatchDeletions()
     for (const job of this.store.data.jobs) {
@@ -161,7 +197,8 @@ export class WatchPublisher {
     if (this.preparing || this.store.data.uploadsPaused) return
     // 两个传输和两个已准备文件足够衔接；长队列逐步处理，避免反复淘汰摘要缓存或持续抢磁盘。
     if (this.store.data.jobs.filter(j => ['processing', 'uploading'].includes(j.status) && this.eligible(this.store.rootFor(j))).length >= 4) return
-    const job = this.store.data.jobs.find(j => j.status === 'queued' && this.eligible(this.store.data.watches.find(w => w.id === j.watchId)))
+    const job = this.store.data.jobs.find(j => j.status === 'queued' && !this.waitingForDuplicate(j)
+      && this.eligible(this.store.data.watches.find(w => w.id === j.watchId)))
     if (!job) return
     // 旧版已缓存版本的文件也需核对季号；已登记的发布清单始终沿用原季。
     if (job.seasonNumber === undefined && !job.fileKey) {
@@ -238,26 +275,31 @@ export class WatchPublisher {
       if (!this.eligible(root) || job.status !== 'preparing') return
       job.targetKey = targetKey(root, job.episodeNumber, releaseIdentity)
       const key = job.fileKey ?? stableKey('gvs-f1', [root.binding.publisherId, job.targetKey, hash.sha1, hash.size, job.id])
-      // 相同目标、集号与完整内容重复出现时，只保留一个发布任务。
+      // 续传必须沿用自己的发布清单，不能被其他任务截成重复而遗留上传断点。
+      if (!job.fileKey) { delete job.duplicateOf; delete job.reused }
+      // 本地只合并完整内容相同的副本；不同内容是否占用同集由服务端按首次 ready 决定。
       const sameTarget = (j: WatchJob) => {
         const bound = this.store.rootFor(j)
         const id = j.release?.id ?? j.release?.key ?? bound?.releaseId
         return (j.targetKey ?? (bound && id ? targetKey(bound, j.episodeNumber, id) : undefined)) === job.targetKey
       }
-      const other = this.store.data.jobs.find(j => j.id !== job.id && sameTarget(j) && j.sha1 === hash.sha1
-        && j.signature.size === hash.size && !j.changed && j.status !== 'cancelled')
+      const other = !job.fileKey && this.store.data.jobs.find(j => j.id !== job.id && sameTarget(j) && j.sha1 === hash.sha1
+        && j.signature.size === hash.size && j.fileKey && !j.changed && !j.manuallyPaused
+        && (j.status === 'completed' || this.publishing(j)))
       if (other) {
         const oldRoot = this.store.rootFor(other)
         const available = oldRoot?.enabled && await safeWatchFile(oldRoot, other.path).then(sig => sameSignature(sig, other.signature)).catch(() => false)
-        if (available) {
-          job.status = 'duplicate'; job.error = other.status === 'failed' ? '相同内容已有失败任务，请重试原任务' : '相同内容已处理或正在队列中'; job.sha1 = hash.sha1
-          job.duplicateOf = other.id; job.ed2k = other.ed2k; job.ed2kSaved = other.ed2kSaved
+        signal.throwIfAborted()
+        if (!this.eligible(root) || job.status !== 'preparing') return
+        if (available && (other.status === 'completed' || this.publishing(other))) {
+          job.sha1 = hash.sha1; job.duplicateOf = other.id
+          // 原任务尚未成功时保持排队，后续 tick 会跳过等待项，不阻塞其他集准备。
+          if (other.status !== 'completed') { job.status = 'queued'; return }
+          job.status = 'duplicate'; job.error = '相同内容已处理'
+          job.ed2k = other.ed2k; job.ed2kSaved = other.ed2kSaved
           return
         }
       }
-      const conflict = this.store.data.jobs.find(j => j.id !== job.id && sameTarget(j)
-        && j.sha1 && j.sha1 !== hash.sha1 && !j.changed && !['cancelled', 'duplicate'].includes(j.status))
-      if (conflict) throw new Error('同一版本已有该集或电影的其他内容，请使用另一个版本绑定')
       // 中断续传沿用原发布清单。新发现的成品先查服务端，覆盖其他客户端上传和本地记录丢失的情况。
       if (!job.fileKey && releaseId) {
         job.phase = 'checking'; this.changed()
@@ -271,7 +313,7 @@ export class WatchPublisher {
         if (result.status === 'conflict') throw new Error('此版本的同一集或电影已有其他内容，请检查版本绑定')
         if (result.status === 'existing') {
           if (!result.fileId || !/^[a-f0-9]{32}$/.test(result.fileId)) throw new Error('PlutoFish 查重结果无效，已停止上传')
-          // 复用远端文件，但仍进入共享引擎完成 ED2K、任务登记及本地片段校验资格接续。
+          // existing 也可能是不同内容的先到剧集；沿用共享登记流程，由服务端隔离 ED2K 和本地校验资格。
           job.reused = true; job.duplicateOf = result.fileId
         }
       }

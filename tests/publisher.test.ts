@@ -20,8 +20,10 @@ import { applyWatchEdit } from '../src/main/watch-edit'
 const disposers: Array<() => Promise<unknown>> = []
 afterEach(async () => { for (const dispose of disposers.splice(0).reverse()) await dispose() })
 
+type TestReply = { status?: number; body?: unknown; headers?: Record<string, string> } | 'disconnect' | undefined
+
 async function setup(options: { check?: (body: any) => unknown; proofs?: boolean; diagnostics?: boolean; releases?: (body: any) => unknown; loseFirstReport?: boolean;
-  reply?: (path: string, body: any) => { status?: number; body?: unknown; headers?: Record<string, string> } | 'disconnect' | undefined;
+  reply?: (path: string, body: any) => TestReply | Promise<TestReply>;
   retry?: ConstructorParameters<typeof WatchPublisher>[5]; connection?: ConstructorParameters<typeof WatchConnection>[0]
 } = {}) {
   const temp = await realpath(await mkdtemp(join(tmpdir(), 'pluto-publish-')))
@@ -41,7 +43,7 @@ async function setup(options: { check?: (body: any) => unknown; proofs?: boolean
     const payload = body ? JSON.parse(body) : null
     const path = req.url!.replace('/api/v1/publisher/', '')
     calls.push({ path, body: payload, auth: req.headers.authorization })
-    const injected = options.reply?.(path, payload)
+    const injected = await options.reply?.(path, payload)
     if (injected === 'disconnect') { req.socket.destroy(); return }
     if (injected) { res.writeHead(injected.status ?? 200, { 'Content-Type': 'application/json', ...injected.headers }).end(JSON.stringify(injected.body ?? {})); return }
     // 对齐服务端 TaskReport.validate / validateEpisode，不能让假服务接受线上会拒绝的剧集。
@@ -944,6 +946,141 @@ test('媒体校验之后被同大小内容替换，上传请求前拦截', async
   expect(f.calls.some(c => c.path === 'files/report')).toBe(false)
 })
 
+
+/** 创建真实副本及独立任务，模拟升级前落盘的记录或后来发现的文件。 */
+async function copyJob(f: Awaited<ReturnType<typeof setup>>, id: string, options: Partial<WatchJob> = {}, different = false): Promise<WatchJob> {
+  const path = join(f.root.path, `${id}.S01E01.mp4`)
+  await copyFile(f.file, path)
+  if (different) await appendFile(path, 'different container metadata')
+  const job: WatchJob = {
+    id, watchId: f.root.id, path, relativePath: `${id}.S01E01.mp4`, signature: await safeFile(f.root.path, path),
+    episodeNumber: 1, seasonNumber: 1, status: 'queued', error: '', percent: 0,
+    createdAt: f.job.createdAt, updatedAt: f.job.updatedAt, ...options,
+  }
+  f.store.data.jobs.push(job)
+  return job
+}
+
+test.each(['failed', 'paused', 'completed'] as const)('同集不同内容交给服务端裁定，本地 %s 记录不拦截', async status => {
+  const winner = 'd'.repeat(32)
+  const f = await setup({ check: () => status === 'completed' ? { status: 'existing', fileId: winner, ed2k: 'remote-winner-link' } : { status: 'missing' } })
+  const old = await copyJob(f, 'old', {
+    status, fileKey: 'gvs-f1:old', release: { id: f.root.releaseId, name: f.root.releaseName }, error: '历史任务',
+  }, true)
+  old.sha1 = createHash('sha1').update(await readFile(old.path)).digest('hex').toUpperCase()
+  f.store.save()
+  await until(f.publisher, () => f.job.status === 'completed' && f.job.ed2kSaved === true)
+  const check = f.calls.find(c => c.path === 'files/check')!.body
+  expect(check).toMatchObject({ releaseId: f.root.releaseId, episodeNumber: 1, sha1: f.job.sha1 })
+  expect(check.sha1).not.toBe(old.sha1)
+  expect(f.calls.find(c => c.path === 'files/report')!.body).toMatchObject({ deduplicate: true, sha1: f.job.sha1 })
+  expect(f.job.ed2k?.link).toBe((await ed2kFile(f.file)).link)
+  if (status === 'completed') expect(f.job.duplicateOf).toBe(winner)
+  expect(old.status).toBe(status)
+})
+
+test('同内容旧失败及重复链不占位，升级后被错误跳过的副本重新检查', async () => {
+  const f = await setup()
+  const old = await copyJob(f, 'old-failed', {
+    status: 'failed', fileKey: 'gvs-f1:old', release: { id: f.root.releaseId, name: f.root.releaseName }, error: '上传失败',
+  })
+  old.sha1 = createHash('sha1').update(await readFile(old.path)).digest('hex').toUpperCase()
+  const stale = await copyJob(f, 'stale-duplicate', { status: 'duplicate', sha1: old.sha1, duplicateOf: old.id })
+  Object.assign(f.job, { status: 'duplicate', sha1: old.sha1, duplicateOf: stale.id, ed2kSaved: true,
+    ed2k: { state: 'done', link: 'stale-link', pct: 100, message: '' }, error: '相同内容已有失败任务，请重试原任务' })
+  f.store.save()
+  await until(f.publisher, () => f.job.status === 'completed' && f.job.ed2kSaved === true && stale.status === 'duplicate')
+  expect(old.status).toBe('failed')
+  expect(f.job.fileKey).not.toBe(old.fileKey)
+  expect(f.job.ed2k?.link).toBe((await ed2kFile(f.file)).link)
+  expect(stale.duplicateOf).toBe(f.job.id)
+  expect(f.calls.filter(c => c.path === 'files/report')).toHaveLength(1)
+})
+
+test.each([false, true])('同内容副本等待原发布结果，原任务失败=%s 时也能收尾且不阻塞其他集', async fail => {
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const f = await setup({ reply: async (path, body) => {
+    if (path === 'uploads/prepare' && body.action === 'start' && body.taskKey === f.job.fileKey) {
+      await gate
+      if (fail) return { status: 409, body: { error: { code: 'UPLOAD_REJECTED', message: '原任务上传被拒绝' } } }
+    }
+  } })
+  // 断言失败也要释放回环请求，避免关闭发布器时等在测试门闩上。
+  disposers.push(async () => release())
+  await f.publisher.tick()
+  const copy = await copyJob(f, 'waiting-copy')
+  await until(f.publisher, () => copy.duplicateOf === f.job.id)
+  expect(copy.status).toBe('queued')
+  expect(copy.fileKey).toBeUndefined()
+  const next = await copyJob(f, 'next-episode', { episodeNumber: 2 })
+  await until(f.publisher, () => !!next.fileKey)
+  expect(copy.status).toBe('queued')
+  release()
+  await until(f.publisher, () => next.status === 'completed' && (fail ? copy.status === 'completed' : copy.status === 'duplicate'))
+  expect(f.job.status).toBe(fail ? 'failed' : 'completed')
+  expect(f.calls.filter(c => c.path === 'files/report')).toHaveLength(2)
+  if (fail) expect(copy.fileKey).toBeDefined()
+  else expect(copy.fileKey).toBeUndefined()
+})
+
+test('旧本地冲突失败重启后自动重查，保留版本和原任务身份', async () => {
+  const f = await setup()
+  Object.assign(f.job, { status: 'failed', error: '同一版本已有该集或电影的其他内容，请使用另一个版本绑定',
+    release: { id: f.root.releaseId, name: f.root.releaseName } })
+  f.store.save()
+  await f.publisher.close()
+  const store = new WatchStore(f.store.path)
+  const publisher = new WatchPublisher(store, f.connection, f.temp, () => {}, e => { throw e })
+  disposers.push(() => publisher.close()); f.connection.validateFile = validateWatchedFile(store)
+  publisher.start()
+  await until(publisher, () => store.data.jobs[0].status === 'completed' && store.data.jobs[0].synced === true)
+  expect(store.data.jobs[0].id).toBe(f.job.id)
+  expect(store.data.jobs[0].release).toMatchObject({ id: f.root.releaseId })
+  expect(new WatchStore(f.store.path).data.jobs[0].error).toBe('')
+  expect(f.calls.filter(c => c.path === 'files/check')).toHaveLength(1)
+})
+
+test.each(['manual', 'directory', 'global', 'changed', 'cancelled', 'server'] as const)('旧冲突恢复尊重 %s 停止原因', async reason => {
+  const f = await setup()
+  f.job.status = reason === 'cancelled' ? 'cancelled' : 'failed'
+  f.job.error = reason === 'server' ? '此版本的同一集或电影已有其他内容，请检查版本绑定' : '同一版本已有该集或电影的其他内容，请使用另一个版本绑定'
+  if (reason === 'manual') f.job.manuallyPaused = true
+  if (reason === 'directory') f.root.enabled = false
+  if (reason === 'global') f.store.data.uploadsPaused = true
+  if (reason === 'changed') f.job.changed = true
+  const before = structuredClone(f.job)
+  await f.publisher.tick(); await f.publisher.tick()
+  expect(f.job).toEqual(before)
+  expect(f.calls.some(c => c.path === 'files/check' || c.path === 'files/report')).toBe(false)
+})
+
+test('已有上传回执的失败任务不被相同内容历史记录截断，重试沿用原断点', async () => {
+  let reject = true
+  const f = await setup({ reply: path => path === 'files/report' && reject
+    ? { status: 409, body: { error: { code: 'REPORT_REJECTED', message: '资源登记暂时拒绝' } } } : undefined })
+  await until(f.publisher, () => f.job.status === 'failed')
+  const key = f.job.fileKey
+  await copyJob(f, 'completed-copy', {
+    status: 'completed', fileKey: 'gvs-f1:other', sha1: f.job.sha1, release: structuredClone(f.job.release), synced: true,
+  })
+  f.job.status = 'queued'; reject = false
+  await until(f.publisher, () => f.job.status === 'completed' && f.job.synced === true)
+  expect(f.job.fileKey).toBe(key)
+  expect(f.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'start')).toHaveLength(1)
+  expect(f.calls.filter(c => c.path === 'files/report')).toHaveLength(2)
+})
+
+test('电影不同内容仍遵守服务端冲突回执，后续 tick 不自动绕过', async () => {
+  const f = await setup({ check: () => ({ status: 'conflict' }) })
+  f.root.work.mediaType = 'movie'; delete f.root.seasonNumber
+  await f.publisher.tick(); await f.publisher.tick()
+  expect(f.calls.find(c => c.path === 'files/check')!.body.episodeNumber).toBeUndefined()
+  expect(f.job.status).toBe('failed')
+  expect(f.job.error).toBe('此版本的同一集或电影已有其他内容，请检查版本绑定')
+  expect(f.calls.filter(c => c.path === 'files/check')).toHaveLength(1)
+  expect(f.calls.some(c => c.path === 'uploads/prepare' || c.path === 'files/report')).toBe(false)
+})
 
 test('跨监控目录和改名仍按目标内容去重，不依赖目录 ID', async () => {
   const f = await setup()
