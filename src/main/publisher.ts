@@ -8,7 +8,8 @@ import type { PublicationState } from '../../vendor/publisher/src/integrations/p
 import type { PublicationDraft } from '../../vendor/publisher/src/integrations/plutofish/publication-types'
 import { PublicationWorker } from '../../vendor/publisher/src/integrations/plutofish/publication-worker'
 import type { OSSFactory } from '../../vendor/publisher/src/integrations/plutofish/oss-upload'
-import { PlutoFishConnection } from '../../vendor/publisher/src/integrations/plutofish/connection'
+import type { WatchConnection } from './connection'
+import { MediaReporter } from './media-report'
 import { fingerprint } from '../../vendor/publisher/src/integrations/plutofish/upload-file'
 import type { WatchJob, WatchRoot } from '../shared/model'
 import { WatchStore } from './store'
@@ -27,13 +28,14 @@ import { resolveJobEpisode } from './job-episode'
 
 export class WatchPublisher {
   readonly worker: PublicationWorker
+  private media: MediaReporter
   private preparing?: { jobId: string; abort: AbortController; promise: Promise<void> }
   private closed = false
   private fatalError = false
   private timer?: ReturnType<typeof setInterval>
   private batches: OneTimeBatches
   constructor(
-    private store: WatchStore, private connection: PlutoFishConnection, directory: string,
+    private store: WatchStore, private connection: WatchConnection, directory: string,
     private changed: () => void, private fatal: (error: unknown) => void,
     private retryOptions: { now?: () => number; baseMs?: number; maxMs?: number; factory?: OSSFactory; compute?: RetentionOptions['compute'] } = {},
   ) {
@@ -56,6 +58,7 @@ export class WatchPublisher {
         canDelete: state => this.canDelete(state),
       },
     })
+    this.media = new MediaReporter(store, connection, () => this.now())
   }
 
   start(): void {
@@ -80,6 +83,8 @@ export class WatchPublisher {
         job.status = job.manuallyPaused ? 'paused' : 'queued'
       }
     }
+    // 已完成但还没补报轨道的任务（含升级前的历史任务）排队补报。
+    this.media.restore()
     this.store.save()
     this.timer = setInterval(() => { void this.tick().catch(this.fatal) }, 1000)
   }
@@ -194,6 +199,8 @@ export class WatchPublisher {
         job.status = 'queued'; delete job.retry.nextAt
       }
     }
+    // 轨道补报只是元数据，暂停上传时照常进行；每个节拍最多一个任务。
+    await this.media.tick()
     if (this.preparing || this.store.data.uploadsPaused) return
     // 两个传输和两个已准备文件足够衔接；长队列逐步处理，避免反复淘汰摘要缓存或持续抢磁盘。
     if (this.store.data.jobs.filter(j => ['processing', 'uploading'].includes(j.status) && this.eligible(this.store.rootFor(j))).length >= 4) return
@@ -228,7 +235,8 @@ export class WatchPublisher {
       this.connection.assertBinding(root.binding)
       const before = await safeWatchFile(root, job.path)
       if (!sameSignature(before, job.signature)) throw new Error('文件已改变，等待目录重新扫描')
-      const measured = await probeFile(findProbe(this.store.data.ffprobe), job.path, before.size, signal)
+      const { tracks, ...measured } = await probeFile(findProbe(this.store.data.ffprobe), job.path, before.size, signal)
+      this.media.record(job, tracks)
       if (!job.release || (!job.release.id && job.release.key)) {
         if (root.versionMode === 'auto') {
           const preset = job.sourceOverride ?? root.sourcePreset

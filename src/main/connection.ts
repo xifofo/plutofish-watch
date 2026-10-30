@@ -2,6 +2,7 @@
 import { PlutoFishConnection } from '../../vendor/publisher/src/integrations/plutofish/connection'
 import { safeWatchFile, sameSignature } from './files'
 import type { WatchStore } from './store'
+import type { MediaTracks } from '../shared/model'
 
 type Request = Parameters<PlutoFishConnection['request']>
 
@@ -20,6 +21,14 @@ export class WatchConnection extends PlutoFishConnection {
       signal?.throwIfAborted()
     }
     return super.request<T>(binding, path, body, signal)
+  }
+
+  /** 补报正片轨道（files/media）。这是监控器自己的接口，共享引擎的路径列表只覆盖引擎内的请求，
+   * 因此在这里转换路径类型；鉴权、绑定校验与错误处理仍走引擎的同一请求实现。返回 applied 或 missing。 */
+  async reportMedia(binding: Request[0], body: { sourceAccount: string; sha1: string; sizeBytes: number } & MediaTracks, signal?: AbortSignal): Promise<'applied' | 'missing'> {
+    const result = await super.request<{ status?: unknown } | null>(binding, 'files/media' as Request[1], body, signal)
+    if (result?.status !== 'applied' && result?.status !== 'missing') throw new Error('PlutoFish 轨道补报结果无效')
+    return result.status
   }
 }
 

@@ -64,6 +64,14 @@ export type Observation = {
   signature: Signature; stableSince: number; jobId?: string; ignored?: boolean
 }
 export type JobStatus = 'waiting' | 'queued' | 'preparing' | 'review' | 'processing' | 'uploading' | 'paused' | 'failed' | 'completed' | 'duplicate' | 'cancelled'
+/** 正片轨道快照：上传时用本机 ffprobe 读出，资源登记完成后补报给 PlutoFish，生成「特效字幕」「国语」等版本标签。 */
+export type MediaTracks = {
+  audio: Array<{ codec: string; profile?: string; channels?: number; language?: string; title?: string; default: boolean }>
+  subtitles: Array<{ codec: string; language?: string; title?: string; default: boolean; forced: boolean }>
+}
+/** 轨道补报状态：pending 等待补报（nextAt 前不重试），done 已写入，skipped 本次运行不再尝试（下次启动再给一次机会）。 */
+export type MediaReport = { state: 'pending' | 'done' | 'skipped'; attempts: number; nextAt?: number }
+
 export type WatchJob = {
   id: string; watchId: string; path: string; relativePath: string; signature: Signature
   /** 编辑目录后，已开始发布的任务继续沿用原路径和发布归属。 */
@@ -95,6 +103,8 @@ export type WatchJob = {
   versionReview?: { reason: string; detected: string; choices: Release[]; source?: ReleaseSource; sourceRequired?: boolean }
   /** 用户暂停与目录暂停分开，恢复目录不会恢复用户主动暂停的任务。 */
   manuallyPaused?: boolean; changed?: boolean
+  /** 探测时读出的轨道，补报成功后删除；历史任务没有时由补报流程按原文件重新探测。 */
+  tracks?: MediaTracks; media?: MediaReport
 }
 export type DiskState = {
   schemaVersion: 1; watches: WatchRoot[]; jobs: WatchJob[]

@@ -12,7 +12,7 @@ import { WatchConnection, validateWatchedFile } from '../src/main/connection'
 import { WatchStore } from '../src/main/store'
 import { WatchPublisher } from '../src/main/publisher'
 import { safeFile } from '../src/main/files'
-import { findProbe, probeFile } from '../src/main/probe'
+import { findProbe, probeFile, readTracks } from '../src/main/probe'
 import type { WatchRoot, WatchJob } from '../src/shared/model'
 import { DirectoryWatcher } from '../src/main/watcher'
 import { applyWatchEdit } from '../src/main/watch-edit'
@@ -23,16 +23,25 @@ afterEach(async () => { for (const dispose of disposers.splice(0).reverse()) awa
 type TestReply = { status?: number; body?: unknown; headers?: Record<string, string> } | 'disconnect' | undefined
 
 async function setup(options: { check?: (body: any) => unknown; proofs?: boolean; diagnostics?: boolean; releases?: (body: any) => unknown; loseFirstReport?: boolean;
+  /** tracks 为真时生成带国配音轨与简英特效字幕的 MKV；media 决定 files/media 的回执，默认 applied。 */
+  tracks?: boolean; media?: (body: any) => unknown;
   reply?: (path: string, body: any) => TestReply | Promise<TestReply>;
   retry?: ConstructorParameters<typeof WatchPublisher>[5]; connection?: ConstructorParameters<typeof WatchConnection>[0]
 } = {}) {
   const temp = await realpath(await mkdtemp(join(tmpdir(), 'pluto-publish-')))
   disposers.push(() => rm(temp, { recursive: true, force: true }))
   await mkdir(join(temp, 'media'))
-  const file = join(temp, 'media', 'Show.S01E01.mp4')
+  const file = join(temp, 'media', options.tracks ? 'Show.S01E01.mkv' : 'Show.S01E01.mp4')
   const ffmpeg = Bun.which('ffmpeg')
   if (!ffmpeg) throw new Error('离线集成测试需要本机 ffmpeg')
-  const generated = spawnSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=green:s=320x180:d=0.1', '-c:v', 'mpeg4', '-y', file])
+  const subtitle = join(temp, 'subtitle.srt')
+  if (options.tracks) await writeFile(subtitle, '1\n00:00:00,000 --> 00:00:00,090\n测试\n')
+  const generated = spawnSync(ffmpeg, options.tracks
+    ? ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=green:s=320x180:d=0.1', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.1', '-i', subtitle,
+      '-map', '0:v', '-map', '1:a', '-map', '2:s', '-c:v', 'mpeg4', '-c:a', 'aac', '-c:s', 'srt',
+      '-metadata:s:a:0', 'language=chi', '-metadata:s:a:0', 'title=国配', '-disposition:a:0', 'default',
+      '-metadata:s:s:0', 'language=chi', '-metadata:s:s:0', 'title=简英特效', '-disposition:s:0', '0', '-y', file]
+    : ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=green:s=320x180:d=0.1', '-c:v', 'mpeg4', '-y', file])
   if (generated.status !== 0) throw new Error('生成本地测试视频失败')
   const calls: Array<{ path: string; body: any; auth: string | undefined }> = []
   const createdReleases = new Map<string, { id: string; name: string; resolution: string; dynamicRange: string; status: string; seasonNumber?: number }>()
@@ -82,6 +91,7 @@ async function setup(options: { check?: (body: any) => unknown; proofs?: boolean
       result = { accepted: true }
     }
     else if (path === 'files/ed2k' || path === 'range-proofs/forget' || path === 'range-proofs/report') result = { accepted: true }
+    else if (path === 'files/media') result = options.media?.(payload) ?? { status: 'applied' }
     else if (path === 'range-proofs/pending') {
       const done = calls.find(c => c.path === 'files/report')?.body
       const reported = calls.some(c => c.path === 'range-proofs/report')
@@ -107,7 +117,7 @@ async function setup(options: { check?: (body: any) => unknown; proofs?: boolean
   const store = new WatchStore(join(temp, 'state.json'))
   connection.validateFile = validateWatchedFile(store)
   store.data.watches.push(root)
-  const job: WatchJob = { id: 'job-1', watchId: root.id, path: file, relativePath: 'Show.S01E01.mp4', signature: await safeFile(root.path, file),
+  const job: WatchJob = { id: 'job-1', watchId: root.id, path: file, relativePath: options.tracks ? 'Show.S01E01.mkv' : 'Show.S01E01.mp4', signature: await safeFile(root.path, file),
     episodeNumber: 1, status: 'queued', error: '', percent: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
   store.data.jobs.push(job); store.save()
   const publisher = new WatchPublisher(store, connection, temp, () => {}, e => { throw e }, options.retry)
@@ -1377,4 +1387,92 @@ for (const cleanup of [false, true]) test(`一次性发布完成并同步 ED2K�
     expect(f.job.retention?.state).toBe('deleted')
     expect(f.job.status).toBe('completed'); expect(f.job.ed2k!.link).toContain('ed2k:')
   }
+})
+
+test('ffprobe 轨道归一：标签键不分大小写，去掉控制字符并按服务端上限截断，强制字幕与默认轨道如实记录', () => {
+  const tracks = readTracks([
+    { codec_type: 'video', codec_name: 'hevc' },
+    { codec_type: 'audio', codec_name: 'truehd', profile: 'Dolby TrueHD + Dolby Atmos', channels: 8, tags: { LANGUAGE: 'ENG' }, disposition: { default: 1 } },
+    { codec_type: 'audio', codec_name: 'ac3', channels: 64, tags: { language: 'chi', title: '国配\u0007' }, disposition: { default: 0 } },
+    { codec_type: 'subtitle', codec_name: 'ass', tags: { language: 'chi', TITLE: '简英特效'.repeat(50) }, disposition: { default: 1, forced: 0 } },
+    { codec_type: 'subtitle', tags: { title: '  ' }, disposition: { forced: 1 } },
+  ])
+  expect(tracks.audio).toEqual([
+    { codec: 'truehd', language: 'eng', default: true, profile: 'Dolby TrueHD + Dolby Atmos', channels: 8 },
+    { codec: 'ac3', language: 'chi', title: '国配', default: false },
+  ])
+  expect(tracks.subtitles[0].title).toHaveLength(160)
+  expect(tracks.subtitles[1]).toEqual({ codec: 'unknown', default: false, forced: true })
+  expect(readTracks(Array.from({ length: 80 }, () => ({ codec_type: 'subtitle', codec_name: 'srt' }))).subtitles).toHaveLength(64)
+})
+
+test('资源登记完成后补报本机读出的音轨与字幕轨，成功后不再重复', async () => {
+  const f = await setup({ tracks: true })
+  await until(f.publisher, () => f.job.media?.state === 'done')
+  const reports = f.calls.filter(c => c.path === 'files/media')
+  expect(reports).toHaveLength(1)
+  const body = reports[0].body
+  const done = f.calls.findIndex(c => c.path === 'files/report')
+  expect(done).toBeGreaterThanOrEqual(0)
+  expect(f.calls.indexOf(reports[0])).toBeGreaterThan(done)
+  expect(body).toMatchObject({ sourceAccount: 'main', sha1: f.job.sha1, sizeBytes: f.job.signature.size })
+  expect(body.audio).toEqual([expect.objectContaining({ codec: 'aac', language: 'chi', title: '国配', default: true })])
+  expect(body.subtitles).toEqual([{ codec: 'subrip', language: 'chi', title: '简英特效', default: false, forced: false }])
+  expect(f.job.tracks).toBeUndefined()
+  for (let i = 0; i < 3; i++) await f.publisher.tick()
+  expect(f.calls.filter(c => c.path === 'files/media')).toHaveLength(1)
+  expect(new WatchStore(f.store.path).data.jobs[0].media?.state).toBe('done')
+})
+
+test('资源尚未登记时按退避重试补报；旧服务端不支持时本次跳过，下次启动再试一次', async () => {
+  let now = 100000, missing = true
+  const f = await setup({ tracks: true, retry: { now: () => now }, media: () => ({ status: missing ? 'missing' : 'applied' }) })
+  await until(f.publisher, () => f.job.media?.attempts === 1)
+  expect(f.job.media).toEqual({ state: 'pending', attempts: 1, nextAt: now + 30_000 })
+  now += 29_999
+  for (let i = 0; i < 3; i++) await f.publisher.tick()
+  expect(f.calls.filter(c => c.path === 'files/media')).toHaveLength(1)
+  missing = false; now += 1
+  await until(f.publisher, () => f.job.media?.state === 'done')
+  expect(f.calls.filter(c => c.path === 'files/media')).toHaveLength(2)
+
+  let supported = false
+  const old = await setup({ tracks: true, reply: path => path === 'files/media' && !supported ? { status: 404 } : undefined })
+  await until(old.publisher, () => old.job.media?.state === 'skipped')
+  for (let i = 0; i < 3; i++) await old.publisher.tick()
+  expect(old.calls.filter(c => c.path === 'files/media')).toHaveLength(1)
+  // 服务端升级后重启：跳过的任务重新排队，轨道仍在记录里，不必重新探测。
+  supported = true
+  await old.publisher.close()
+  const restarted = new WatchPublisher(old.store, old.connection, old.temp, () => {}, e => { throw e })
+  disposers.push(() => restarted.close())
+  restarted.start()
+  await until(restarted, () => old.job.media?.state === 'done')
+  expect(old.calls.filter(c => c.path === 'files/media')).toHaveLength(2)
+})
+
+test('升级前完成的任务启动后按原文件补探测补报；原文件已改变则跳过，不发请求', async () => {
+  const f = await setup({ tracks: true, media: () => ({ status: 'missing' }) })
+  await until(f.publisher, () => f.job.media?.attempts === 1)
+  await f.publisher.close()
+  // 模拟旧版本留下的记录：已完成，但没有轨道和补报状态。
+  delete f.job.tracks; delete f.job.media; f.store.save()
+  const calls = f.calls.filter(c => c.path === 'files/media').length
+  const restarted = new WatchPublisher(f.store, f.connection, f.temp, () => {}, e => { throw e })
+  disposers.push(() => restarted.close())
+  restarted.start()
+  await until(restarted, () => f.job.media?.attempts === 1 && f.calls.filter(c => c.path === 'files/media').length === calls + 1)
+  expect(f.calls.filter(c => c.path === 'files/media').at(-1)!.body.subtitles[0].title).toBe('简英特效')
+
+  const changed = await setup({ tracks: true })
+  await until(changed.publisher, () => changed.job.status === 'completed')
+  await changed.publisher.close()
+  delete changed.job.tracks; delete changed.job.media; changed.store.save()
+  await appendFile(changed.file, 'x')
+  const before = changed.calls.filter(c => c.path === 'files/media').length
+  const again = new WatchPublisher(changed.store, changed.connection, changed.temp, () => {}, e => { throw e })
+  disposers.push(() => again.close())
+  again.start()
+  await until(again, () => changed.job.media?.state === 'skipped')
+  expect(changed.calls.filter(c => c.path === 'files/media')).toHaveLength(before)
 })
