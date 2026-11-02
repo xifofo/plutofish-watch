@@ -1,13 +1,14 @@
 <script setup lang="ts">
 const appVersion = __APP_VERSION__
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import type { Snapshot, WatchInput, WatchRoot, ReleaseSource } from '../../shared/model'
+import type { Snapshot, WatchInput, WatchRoot, ReleaseSource, UpdateState } from '../../shared/model'
 import Icon from './Icon.vue'
 import DirectoryForm from './DirectoryForm.vue'
 import JobList from './JobList.vue'
 import SourceFields from './SourceFields.vue'
 import RetentionSettings from './RetentionSettings.vue'
 import OneTimeList from './OneTimeList.vue'
+import UpdateDialog from './UpdateDialog.vue'
 import { defaultRetention } from '../../shared/retention'
 import { watchPaths } from '../../shared/watch-paths'
 import watchFoldersArt from './assets/watch-folders.png'
@@ -27,7 +28,25 @@ function edit(root: WatchRoot) {
 function editSource(root: WatchRoot) { sourceRoot.value = root; sourceDraft.value = { ...root.sourcePreset } }
 async function saveSource() { await run(async () => { await api.setSourcePreset({ id: sourceRoot.value!.id, source: { ...sourceDraft.value } }); sourceRoot.value = undefined }) }
 const credentials = reactive({ url: '', key: '' })
-let unsubscribe: (() => void) | undefined
+let unsubscribe: (() => void) | undefined, unsubscribeUpdate: (() => void) | undefined
+const update = ref<UpdateState>()
+const transfers = computed(() => state.value.jobs.filter(j => ['preparing', 'processing', 'uploading'].includes(j.status)).length)
+const updateStatus = computed(() => {
+  const u = update.value
+  if (!u) return ''
+  if (!u.enabled) return '开发版本不检查更新'
+  if (u.checking) return '正在检查更新…'
+  if (u.checkError) return u.checkError
+  if (u.release) return `可更新到 v${u.release.version}`
+  if (u.checkedAt) return `已是最新版本 · ${new Date(u.checkedAt).toLocaleTimeString('zh-CN')} 检查`
+  return '启动后自动检查，之后每 6 小时检查一次'
+})
+async function checkUpdate() {
+  try {
+    if (update.value?.release) await api.update.reopen()
+    else update.value = await api.update.check()
+  } catch (e) { error.value = e instanceof Error ? e.message : '检查更新失败' }
+}
 const connected = computed(() => state.value.connection.status === 'verified')
 watch(connected, ready => { if (ready && error.value.startsWith('PlutoFish 网络连接中断')) error.value = '' })
 const monitored = computed(() => state.value.watches.filter(w => w.mode !== 'once'))
@@ -66,9 +85,11 @@ async function connect() {
 }
 onMounted(async () => {
   unsubscribe = api.onChange(value => { state.value = value })
+  unsubscribeUpdate = api.update.onChange(value => { update.value = value })
+  void api.update.state().then(value => { update.value ??= value }, () => {})
   await run(async () => { state.value = await api.snapshot(); credentials.url = state.value.connection.url })
 })
-onUnmounted(() => unsubscribe?.())
+onUnmounted(() => { unsubscribe?.(); unsubscribeUpdate?.() })
 </script>
 <template>
   <div class="app-shell">
@@ -76,7 +97,7 @@ onUnmounted(() => unsubscribe?.())
       <div class="brand"><img class="brand-mark" :src="brandIcon" width="48" height="48" alt="" aria-hidden="true" :draggable="false" /><div>PlutoFish<span>WATCH</span></div></div>
       <nav><button v-for="n in nav" :key="n.id" :class="{ active: view === n.id || (n.id === 'watches' && ['new', 'edit'].includes(view)) || (n.id === 'once' && view === 'new-once') }" @click="view = n.id; error = ''"><Icon :name="n.icon" :size="19" />{{ n.title }}<span v-if="n.id === 'jobs' && attention" class="nav-count">{{ attention }}</span></button></nav>
       <div class="sidebar-bottom"><div class="connection-dot" :class="{ online: connected }" /><div><strong>{{ connected ? state.connection.identity?.name : state.connection.reconnect ? '等待自动重连' : '尚未连接' }}</strong></div><button class="icon-button" aria-label="连接设置" @click="view = 'settings'"><Icon name="settings" :size="18" /></button></div>
-      <div class="sidebar-version">v{{ appVersion }}</div>
+      <div class="sidebar-version">v{{ appVersion }}<button v-if="update?.release" class="update-chip" :title="`可更新到 v${update.release.version}`" @click="checkUpdate"><span />新版本 v{{ update.release.version }}</button></div>
     </aside>
     <main>
       <div class="topbar"><span><span class="tiny-dot" :class="{ online: active > 0 }" />{{ active ? `${active} 个目录监控中` : '目录监控' }}</span><span class="retention-note"><Icon name="check" :size="13" />{{ state.retention.enabled ? `监控文件 ${state.retention.days} 天后清理` : '监控文件保留' }}</span></div>
@@ -99,6 +120,7 @@ onUnmounted(() => unsubscribe?.())
           <section class="panel settings-panel"><h2>视频检测</h2><div class="tool-row probe-row"><div><span class="badge" :class="state.ffprobeAvailable ? 'completed' : 'review'">{{ state.ffprobeAvailable ? '可用' : '需要配置' }}</span><code>{{ state.ffprobe }}</code></div><button class="button secondary" :disabled="busy" @click="run(() => api.chooseProbe())">选择 ffprobe</button></div></section>
           <RetentionSettings :settings="state.retention" :busy="busy" @save="input => run(() => api.setRetention(input))" />
           <section class="panel settings-panel"><h2>运行方式</h2><div class="preference"><div><strong>关闭窗口后继续监控</strong><p>从托盘退出以停止任务</p></div><span class="badge completed">已启用</span></div></section>
+          <section class="panel settings-panel"><h2>版本更新</h2><div class="preference"><div><strong>当前版本 v{{ appVersion }}</strong><p :class="{ 'update-error': update?.checkError }">{{ updateStatus }}</p></div><button class="button secondary" :disabled="!update?.enabled || update.checking" @click="checkUpdate">{{ update?.release ? '查看更新' : update?.checking ? '正在检查…' : '检查更新' }}</button></div></section>
         </template>
         <template v-else>
           <div class="page-heading"><h1>{{ view === 'overview' ? '概览' : view === 'watches' ? '监控目录' : view === 'once' ? '一次性上传' : '传输任务' }}</h1>
@@ -126,5 +148,6 @@ onUnmounted(() => unsubscribe?.())
         </template>
       </div>
     </main>
+    <UpdateDialog v-if="update?.release && !update.dismissed" :update="update" :transfers="transfers" />
   </div>
 </template>

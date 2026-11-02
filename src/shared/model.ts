@@ -115,6 +115,14 @@ export type Snapshot = {
   connection: Connection; watches: WatchRoot[]; jobs: WatchJob[]
   uploadsPaused: boolean; ffprobe: string; ffprobeAvailable: boolean; fatalError: string; retention: LocalRetentionSettings
 }
+/** 应用更新：mode 为 install 时下载后自动退出安装，open 打开安装包由用户替换，page 只能前往下载页。 */
+export type UpdateState = {
+  current: string; enabled: boolean; checking: boolean; checkedAt?: number; checkError?: string
+  release?: { version: string; publishedAt: string; notes: string; page: string; size: number; mode: 'install' | 'open' | 'page' }
+  /** 本次运行中用户选择了暂不更新；重新启动或发现更新的版本时再次提示。 */
+  dismissed: boolean
+  download?: { status: 'downloading' | 'ready' | 'installing' | 'failed'; received: number; total: number; error?: string }
+}
 export type DirectoryPage = {
   sourceAccountId: string; path: Array<{ id: string; name: string }>
   items: Array<{ id: string; name: string }>; nextCursor: string
@@ -144,4 +152,15 @@ export interface WatchAPI {
   job(input: { id: string; action: 'pause' | 'resume' | 'cancel' | 'confirm' | 'selectVersion' | 'refreshVersion' | 'confirmSource'; episodeNumber?: number; seasonNumber?: number; releaseId?: string; source?: ReleaseSource }): Promise<void>
   reveal(id: string): Promise<void>
   onChange(callback: (state: Snapshot) => void): () => void
+  update: {
+    state(): Promise<UpdateState>
+    check(): Promise<UpdateState>
+    download(): Promise<void>
+    cancel(): Promise<void>
+    dismiss(): Promise<void>
+    reopen(): Promise<void>
+    install(): Promise<void>
+    openPage(): Promise<void>
+    onChange(callback: (state: UpdateState) => void): () => void
+  }
 }
