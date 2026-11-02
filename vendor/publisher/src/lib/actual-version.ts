@@ -70,9 +70,17 @@ function identity(v: StreamVersion): string {
     v.width || 0, v.height || 0, v.fps || 0, v.codec || '', v.estimatedBytes || 0])
 }
 
+function sameFormatId(selected?: string, actual?: string): boolean {
+  if (!selected || !actual) return false
+  if (selected.toLowerCase() === actual.toLowerCase()) return true
+  // Play metadata appends a track suffix (322100 -> 322100001) to the catalog format ID.
+  return /^\d{5,}$/.test(selected) && /^\d{3}$/.test(actual.slice(selected.length)) && actual.startsWith(selected)
+}
+
 function sameField(key: 'formatId' | 'persona' | 'stream' | 'caption', a: StreamVersion, b: StreamVersion): boolean {
+  if (key === 'formatId' && sameFormatId(a.formatId, b.formatId)) return true
   if (a[key]?.toLowerCase() === b[key]?.toLowerCase()) return true
-  return key === 'stream' && !!a.formatId && a.formatId === b.formatId &&
+  return key === 'stream' && !!a.formatId && sameFormatId(a.formatId, b.formatId) &&
     ['uhd', 'suhd'].includes(a.stream || '') && ['uhd', 'suhd'].includes(b.stream || '')
 }
 
@@ -113,7 +121,8 @@ export function tencentActualVersion(
     if (videoMatches && (explicit.formatId || explicit.stream || explicit.definitionCode)) {
       actual = explicit
       if (explicit.formatId && !explicit.stream) {
-        const streams = [...new Set(rows.map(row => version(row)).filter(v => v.formatId === explicit.formatId).map(v => v.stream).filter(Boolean))]
+        const sameId = (id?: string) => !!id && (id === explicit.formatId || sameFormatId(id, explicit.formatId) || sameFormatId(explicit.formatId, id))
+        const streams = [...new Set(rows.map(row => version(row)).filter(v => sameId(v.formatId)).map(v => v.stream).filter(Boolean))]
         if (streams.length === 1) actual = { ...explicit, stream: streams[0] }
         else if (streams.length === 2 && streams.every(s => ['uhd', 'suhd'].includes(s!))) actual = { ...explicit, stream: 'uhd' }
       }

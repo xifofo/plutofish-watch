@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "https://github.com/xifofo/gvs-tui",
-  "baseRevision": "38290d09d019eb19492c2a2dafd8b420aeff99c6",
+  "baseRevision": "2788b3b23f6bf851fd907a86b2a95a1b996d0076",
   "includesUncommittedChanges": false,
   "modifiedFiles": [],
   "entries": [
@@ -44,7 +44,7 @@
     "src/integrations/plutofish/upload-receipt.ts": "8d20f007dfa7c7f840a24df181026a36b23cdcaa42a4d2e9f095b765f7ce6985",
     "src/integrations/plutofish/upload-traffic.ts": "e17fd6450dd0eb16a1588a0238b3b86b91fdf0c6acd984b63323041602277484",
     "src/integrations/plutofish/upload-types.ts": "719fe9f301ec68f9f8e9013d9f4151b615b26d2c9e7022159487ed6dbd2f7d65",
-    "src/lib/actual-version.ts": "21463f78c539d9086b05d7f54e8adf6f42ec22fc855297a071c6217ec3c913da",
+    "src/lib/actual-version.ts": "9821b8d2c4650ea26b960f051f63b18c70fa52870c000e97e30a2b37b38a7d6a",
     "src/lib/audio-language.ts": "189c18d024b4a2df13fff352eec6c654797413d89d8c79fe7ab3121d6af46664",
     "src/lib/audio-selection.ts": "967ef2db67c7051c3344fcf3065ec860668a4b5b53840be83580ba4cd2de3820",
     "src/lib/config.ts": "36c177d42c66c84205aba3e6189f9fb73624aaa79773ae9136f576aa92b4434d",
