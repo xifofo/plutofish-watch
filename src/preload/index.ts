@@ -1,6 +1,6 @@
 /** 只暴露固定操作，不开放通用 IPC、文件读取或任意网络调用。 */
 import { contextBridge, ipcRenderer } from 'electron'
-import type { WatchAPI, Snapshot } from '../shared/model'
+import type { WatchAPI, Snapshot, UpdateState } from '../shared/model'
 
 const invoke = async (action: string, payload?: unknown) => {
   const result = await ipcRenderer.invoke('watch:command', action, payload)
@@ -35,6 +35,21 @@ const api: WatchAPI = {
     const listener = (_: unknown, state: Snapshot) => callback(state)
     ipcRenderer.on('watch:state', listener)
     return () => ipcRenderer.removeListener('watch:state', listener)
+  },
+  update: {
+    state: () => invoke('update'),
+    check: () => invoke('checkUpdate'),
+    download: () => invoke('downloadUpdate'),
+    cancel: () => invoke('cancelUpdate'),
+    dismiss: () => invoke('dismissUpdate'),
+    reopen: () => invoke('reopenUpdate'),
+    install: () => invoke('installUpdate'),
+    openPage: () => invoke('openUpdatePage'),
+    onChange: callback => {
+      const listener = (_: unknown, state: UpdateState) => callback(state)
+      ipcRenderer.on('watch:update', listener)
+      return () => ipcRenderer.removeListener('watch:update', listener)
+    },
   },
 }
 contextBridge.exposeInMainWorld('plutoWatch', api)
