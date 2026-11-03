@@ -13,7 +13,8 @@ const platforms: Record<string, string> = {
 export const normalizePlatform = (value = '') => platforms[value.trim().toUpperCase()] ?? value.trim().toUpperCase()
 export const normalizeRange = (value = '') => ({ SDR: 'SDR', HDR: 'HDR10', HDR10: 'HDR10', HLG: 'HLG', DV: 'DV', DOVI: 'DV', DOLBYVISION: 'DV' } as Record<string, string>)[value.toUpperCase()]
 export const videoCodec = (value = '') => ({ H264: 'AVC', X264: 'AVC', AVC: 'AVC', H265: 'HEVC', X265: 'HEVC', HEVC: 'HEVC', AV1: 'AV1', VP9: 'VP9' } as Record<string, string>)[value.toUpperCase().replace('.', '')]
-export const audioCodec = (value = '') => ({ AAC: 'AAC', AC3: 'DD', DD: 'DD', EAC3: 'DDP', 'E-AC3': 'DDP', DDP: 'DDP', DCA: 'DTS', DTS: 'DTS', TRUEHD: 'TRUEHD', MLP: 'TRUEHD', FLAC: 'FLAC' } as Record<string, string>)[value.toUpperCase()]
+// MPEG 音频（电视录制常见的 MP2 及 MP3）按 ffprobe 编码名保留，与版本名中的 MP2.2.0 等写法一致。
+export const audioCodec = (value = '') => ({ AAC: 'AAC', AC3: 'DD', DD: 'DD', EAC3: 'DDP', 'E-AC3': 'DDP', DDP: 'DDP', DCA: 'DTS', DTS: 'DTS', TRUEHD: 'TRUEHD', MLP: 'TRUEHD', FLAC: 'FLAC', MP1: 'MP1', MP2: 'MP2', MP3: 'MP3' } as Record<string, string>)[value.toUpperCase()]
 
 /** 只在技术规格之后识别制作组，保留大小写、点号和横线；技术标签里的横线不是组名边界。 */
 export function splitReleaseGroup(name: string): { specs: string; group: string } {
@@ -70,14 +71,14 @@ export function parseReleaseSpecs(name: string, fallbackHeight?: number) {
   const text = resolution ? tail : tail.slice(marker!.index + (marker![0].startsWith('.') ? 1 : 0))
   const source = releaseSource(name)
   const codec = /(?:^|\.)(AVC|HEVC|AV1|VP9)(?=\.|$)/.exec(text)?.[1]
-  const audio = /(?:^|\.)(AAC|AC3|EAC3|DDP|DD|DTS|TRUEHD|FLAC)(?:\.(\d)\.(\d))?(?=\.|$)/.exec(text)
+  const audio = /(?:^|\.)(AAC|AC3|EAC3|DDP|DD|DTS|TRUEHD|FLAC|MP[123])(?:\.(\d)\.(\d))?(?=\.|$)/.exec(text)
   const dynamic = /(?:^|\.)(SDR|HDR10|HDR|HLG|DV|DOVI)(?=\.|$)/.exec(text)?.[1]
   const fps = /(?:^|\.)(\d+(?:\.\d+)?)FPS(?=\.|$)/.exec(text)?.[1]
   let rest = text.split('.').filter(token => !source.platform || normalizePlatform(token) !== source.platform).join('.')
   for (const pattern of [
     /(?:^|\.)(WEB-DL|WEBRIP|BLURAY|HDTV|DVD)(?=\.|$)/g,
     /(?:^|\.)(AVC|HEVC|AV1|VP9|SDR|HDR10|HDR|HLG|DV|DOVI)(?=\.|$)/g,
-    /(?:^|\.)(AAC|AC3|EAC3|DDP|DD|DTS|TRUEHD|FLAC)(?:\.\d\.\d)?(?=\.|$)/g,
+    /(?:^|\.)(AAC|AC3|EAC3|DDP|DD|DTS|TRUEHD|FLAC|MP[123])(?:\.\d\.\d)?(?=\.|$)/g,
     /(?:^|\.)(\d+(?:\.\d+)?)FPS(?=\.|$)/g,
   ]) rest = rest.replace(pattern, '.')
   const extras = rest.split('.').filter(t => t && !(source.type === 'REMUX' && t === 'REMUX')).sort().join('.')
