@@ -53,7 +53,8 @@ export class WatchPublisher {
         now: retryOptions.now,
         settings: () => {
           const policy = validateRetention(this.store.data.retention)
-          return { hours: policy.enabled ? policy.days * 24 : 0 }
+          // 引擎按毫秒计算到期时间，小数小时不会被取整。
+          return { hours: policy.enabled ? policy.minutes / 60 : 0 }
         },
         canDelete: state => this.canDelete(state),
       },

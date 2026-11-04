@@ -1,7 +1,7 @@
 /** 仅使用临时目录和假时钟，覆盖整目录删除的边界及中断恢复。 */
 import { afterEach, expect, test } from 'bun:test'
 import { mkdtemp, mkdir, realpath, writeFile, appendFile, rm, symlink, rename } from 'node:fs/promises'
-import { existsSync, unlinkSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WatchStore } from '../src/main/store'
@@ -24,7 +24,7 @@ async function fixture(enabled = true, selected = false) {
   const selectedFiles = selected ? [file, join(sub, 'Show.S01E02.mkv')] : undefined
   if (selectedFiles) await writeFile(selectedFiles[1], 'second video')
   const path = selected ? sub : directory
-  const cleanup = { enabled, days: 3 }
+  const cleanup = { enabled, minutes: 4320 }
   const root: WatchRoot = { mode: 'once', selectedFiles, cleanup, batch: await createOneTimeBatch(path, cleanup, selectedFiles),
     id: 'once', path, title: 'Once', work: { mediaType: 'tv', tmdbId: '123', category: 'tv' }, seasonNumber: 1,
     sourceAccountId: 's', releaseId: 'a'.repeat(32), releaseName: '1080p', directoryId: '0', directoryPath: '/', includeExisting: true,
@@ -44,7 +44,7 @@ async function fixture(enabled = true, selected = false) {
 
 test('一次性只入队初始视频，补扫和重启均不增加后来文件', async () => {
   const f = await fixture(false)
-  expect(defaultOneTimeRetention()).toEqual({ enabled: false, days: 1 })
+  expect(defaultOneTimeRetention()).toEqual({ enabled: false, minutes: 1440 })
   await writeFile(join(f.root.path, 'Show.S01E02.mkv'), 'later')
   await f.watcher.scan(); expect(f.store.data.jobs).toHaveLength(1)
   await expect(f.watcher.backfill(f.root.id)).rejects.toThrow('一次性')
@@ -70,6 +70,27 @@ test('所有上传、状态和 ED2K 同步完成才计时，三天未到不删�
   expect(f.root.batch!.deletedAt).toBe(f.now())
   expect(job.status).toBe('completed'); expect(job.ed2k!.link).toContain('ed2k:')
   expect(new WatchStore(f.store.path).data.watches[0].batch!.deletedAt).toBe(f.now())
+})
+
+test('一次性任务可保留 30 分钟，到期前不删', async () => {
+  const f = await fixture()
+  f.root.cleanup = { enabled: true, minutes: 30 }
+  f.complete(); f.manager.tick()
+  expect(f.root.batch!.deleteAt).toBe(f.now() + 30 * 60_000)
+  f.advance(30 * 60_000 - 1); f.manager.tick(); expect(existsSync(f.file)).toBe(true)
+  f.advance(60_001); f.manager.tick()
+  expect(existsSync(f.root.path)).toBe(false)
+})
+
+test('旧版按天保存的一次性任务升级后沿用原到期时间', async () => {
+  const f = await fixture(); f.complete(); f.manager.tick()
+  const due = f.root.batch!.deleteAt!
+  const state = JSON.parse(readFileSync(f.store.path, 'utf8'))
+  state.watches[0].cleanup = { enabled: true, days: 3 }
+  writeFileSync(f.store.path, JSON.stringify(state))
+  const root = new WatchStore(f.store.path).data.watches[0]
+  expect(root.cleanup).toEqual({ enabled: true, minutes: 3 * 1440 })
+  expect(root.batch!.deleteAt).toBe(due)
 })
 
 test('倒计时落盘，重启不重新计时，暂停和关闭删除均阻止清理', async () => {
@@ -110,7 +131,7 @@ test('本地片段校验持有读取租约时暂缓整个目录的清理，释�
 })
 
 test('一次性选择保留不受全局文件清理设置影响', async () => {
-  const f = await fixture(false); f.store.data.retention = { enabled: true, days: 1 }; f.complete(); f.manager.tick()
+  const f = await fixture(false); f.store.data.retention = { enabled: true, minutes: 1440 }; f.complete(); f.manager.tick()
   expect(f.root.batch!.completedAt).toBeDefined(); expect(f.root.batch!.deleteAt).toBeUndefined()
   f.advance(30 * DAY); f.manager.tick(); expect(existsSync(f.file)).toBe(true)
 })
@@ -127,7 +148,7 @@ test('空目录拒绝创建；含链接的目录不能授权整目录删除', as
   const f = await fixture(false), empty = join(f.temp, 'empty'); await mkdir(empty)
   await expect(createOneTimeBatch(empty, defaultOneTimeRetention())).rejects.toThrow('没有可上传')
   await symlink(empty, join(f.root.path, 'link'))
-  await expect(createOneTimeBatch(f.root.path, { enabled: true, days: 3 })).rejects.toThrow('链接')
+  await expect(createOneTimeBatch(f.root.path, { enabled: true, minutes: 4320 })).rejects.toThrow('链接')
   expect((await createOneTimeBatch(f.root.path, defaultOneTimeRetention())).files).toHaveLength(1)
 })
 

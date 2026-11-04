@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { WatchRoot, WatchJob } from '../../shared/model'
 import Icon from './Icon.vue'
+import { formatRetention } from '../../shared/retention'
 defineProps<{ roots: WatchRoot[]; jobs: WatchJob[]; busy: boolean }>()
 const emit = defineEmits<{ toggle: [id: string]; remove: [id: string]; cancelCleanup: [id: string]; jobs: [] }>()
 function cleanupLabel(root: WatchRoot) {
@@ -9,7 +10,7 @@ function cleanupLabel(root: WatchRoot) {
   if (!root.cleanup?.enabled) return `保留本地${target}`
   if (batch.cleanupError) return batch.cleanupError
   if (batch.deleteAt) return `预计 ${new Date(batch.deleteAt).toLocaleString('zh-CN')} 删除${target}${root.enabled ? '' : ' · 已暂停'}`
-  return `全部上传并同步 ED2K 后 ${root.cleanup.days} 天删除${target}`
+  return `全部上传并同步 ED2K 后 ${formatRetention(root.cleanup.minutes)}删除${target}`
 }
 function processed(root: WatchRoot, jobs: WatchJob[]) {
   return root.batch!.files.filter(path => ['completed', 'duplicate'].includes(jobs.findLast(j => j.watchId === root.id && j.path === path)?.status ?? '')).length

@@ -11,6 +11,7 @@ import CloudDirectoryRows from './CloudDirectoryRows.vue'
 import { adjustCreationTarget, creationSegments, directoryCreated, directoryCreationPending } from '../../shared/directory-creation'
 import { watchPaths } from '../../shared/watch-paths'
 import { defaultOneTimeRetention } from '../../shared/retention'
+import RetentionDuration from './RetentionDuration.vue'
 
 const props = defineProps<{ state: Snapshot; busy: boolean; initial?: WatchRoot; once?: boolean }>()
 const emit = defineEmits<{ save: [input: WatchInput]; back: [] }>()
@@ -247,7 +248,7 @@ function submit() {
       <section v-if="once && form.cleanup && form.work.tmdbId && form.title" class="panel form-section once-cleanup">
         <h2 class="section-heading">上传后的{{ form.selectedFiles ? '所选文件' : '本地目录' }}</h2>
         <label class="checkbox"><input v-model="form.cleanup.enabled" type="checkbox" :aria-label="form.selectedFiles ? '自动删除所选文件' : '自动删除本次目录'" /><span>完成后自动删除{{ form.selectedFiles ? '所选文件' : '这个文件夹' }}</span></label>
-        <label class="cleanup-days">全部上传并同步 ED2K 后保留 <input v-model.number="form.cleanup.days" type="number" min="1" max="365" step="1" required :disabled="!form.cleanup.enabled" :aria-label="form.selectedFiles ? '文件保留天数' : '目录保留天数'" /> 天</label>
+        <label class="cleanup-days">全部上传并同步 ED2K 后保留 <RetentionDuration v-model="form.cleanup.minutes" :label="form.selectedFiles ? '文件保留时长' : '目录保留时长'" :disabled="!form.cleanup.enabled" /></label>
         <p class="hint">{{ form.selectedFiles ? (form.cleanup.enabled ? '到期仅删除所选视频，保留文件夹与其他文件。所选文件发生变化时会停止删除。' : '保留所选文件，不受监控目录的自动清理设置影响。') : (form.cleanup.enabled ? '到期删除整个所选文件夹，包括字幕、封面等附属文件。发现新增或修改内容时会停止删除。' : '保留本次目录，不受监控目录的自动清理设置影响。') }} 可在任务列表中取消删除；退出应用时暂停处理，下次启动后继续检查。</p>
       </section>
       <div class="form-footer submit-row"><button class="button primary" type="submit" :disabled="!form.path || recognitionPending || creationPending || !form.work.tmdbId || !form.title || (form.versionMode !== 'auto' && !form.releaseId)"><Icon :name="once ? 'upload' : initial ? 'check' : 'plus'" :size="18" />{{ busy ? '正在保存…' : once ? '开始一次性上传' : initial ? '保存修改' : '创建并开始监控' }}</button></div>
@@ -259,7 +260,6 @@ function submit() {
 .cloud-target-path{overflow-wrap:anywhere;margin-top:12px}
 .section-heading{margin-bottom:18px}
 .cleanup-days{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:16px 0}
-.cleanup-days input{width:80px;margin:0;text-align:center}
 .file-selection-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px}
 .selected-files{max-height:260px;overflow:auto;margin-bottom:16px}
 .selected-file{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}

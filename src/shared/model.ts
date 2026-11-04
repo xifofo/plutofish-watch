@@ -10,7 +10,7 @@ export type Identity = {
   capabilities?: { uploadClientGrouping: boolean }
 }
 export type Connection = { url: string; hasKey: boolean; status: string; error: string; identity: Identity | null; uploadNotice?: string; reconnect?: { attempt: number; nextAt: number } }
-export type LocalRetentionSettings = { enabled: boolean; days: number }
+export type LocalRetentionSettings = { enabled: boolean; minutes: number }
 export type Binding = {
   url: string; publisherId: string; sourceAccount: { id: string; alias: string }
 }

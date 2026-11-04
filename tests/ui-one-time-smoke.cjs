@@ -47,6 +47,7 @@ async function until(fn, label = '状态', timeout = 25000) {
       else if (['files/report', 'files/ed2k', 'range-proofs/forget'].includes(endpoint)) result = { accepted: true }
       else if (endpoint === 'tasks/report') result = { outcome: 'applied' }
       else if (endpoint === 'range-proofs/pending') result = { jobs: [] }
+      else if (endpoint === 'files/media') result = { status: 'applied' }
       else throw Error(`不允许的请求 ${endpoint}`)
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(result))
     } catch (error) { errors.push(String(error)); res.writeHead(500).end() }
@@ -74,14 +75,14 @@ async function until(fn, label = '状态', timeout = 25000) {
   await until(() => js('!!window.plutoWatch').catch(() => false))
   await until(async () => (await snapshot()).ffprobeAvailable)
   await js(`window.plutoWatch.connect(${JSON.stringify({ url: `http://127.0.0.1:${server.address().port}`, key: 'offline-only' })})`)
-  await js('window.plutoWatch.setRetention({enabled:true,days:3})')
+  await js('window.plutoWatch.setRetention({enabled:true,minutes: 4320})')
   await js('window.plutoWatch.pauseAll()')
   await until(() => js("document.querySelector('.sidebar-bottom strong')?.textContent === '一次性上传离线验收'"), '连接状态显示')
   await click('一次性上传'); await click('新建一次性上传')
   assert.equal(await js("!!document.querySelector('.once-cleanup')"), false)
   await click('选择目录'); await until(() => js("!!document.querySelector('.selected-work')"), '识别回填')
   assert.equal(chooseCount, 1)
-  assert.equal(await js("document.querySelector('input[aria-label=目录保留天数]').value"), '1')
+  assert.equal(await js("document.querySelector('input[aria-label=目录保留时长]').value"), '1')
   assert.equal(await js("document.querySelector('input[aria-label=自动删除本次目录]').checked"), false)
   await fill('select[aria-label="版本归类"]', 'fixed'); await click('查询版本')
   await fill('input[type=number][min="10"]', '10')
@@ -94,7 +95,7 @@ async function until(fn, label = '状态', timeout = 25000) {
   assert.equal(await js('document.documentElement.scrollWidth > innerWidth'), false)
   await click('开始一次性上传'); await until(async () => (await snapshot()).watches.length === 1)
   let root = (await snapshot()).watches[0]
-  assert.equal(root.mode, 'once'); assert.deepEqual(root.cleanup, { enabled: true, days: 1 })
+  assert.equal(root.mode, 'once'); assert.deepEqual(root.cleanup, { enabled: true, minutes: 1440 })
   await js('window.plutoWatch.pauseAll()'); offset += 11000; await js('window.plutoWatch.scan()')
   await until(async () => (await snapshot()).watches[0].batch.completedAt !== undefined, '上传和 ED2K 同步')
   root = (await snapshot()).watches[0]; const due = root.batch.deleteAt

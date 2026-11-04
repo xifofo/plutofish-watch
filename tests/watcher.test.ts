@@ -154,7 +154,7 @@ test('一次性总目录的 S1/S2 分别入队；旧季号待确认任务自动�
     const path = join(f.rootPath, name)
     await mkdir(join(path, '..'), { recursive: true }); await writeFile(path, name)
   }
-  f.root.mode = 'once'; f.root.cleanup = { enabled: false, days: 1 }
+  f.root.mode = 'once'; f.root.cleanup = { enabled: false, minutes: 1440 }
   f.root.batch = { files: names.map(name => join(f.rootPath, name)) }
   await f.watcher.scan()
   const old = f.store.data.jobs[1]
@@ -203,7 +203,7 @@ test('一次性选择单个电影文件不要求季集号，也清除未发布�
   delete f.root.seasonNumber
   const file = join(f.root.path, 'Movie.2023.1080p.NF.WEB-DL.mkv')
   await writeFile(file, 'movie')
-  f.root.mode = 'once'; f.root.selectedFiles = [file]; f.root.cleanup = { enabled: false, days: 1 }; f.root.batch = { files: [file] }
+  f.root.mode = 'once'; f.root.selectedFiles = [file]; f.root.cleanup = { enabled: false, minutes: 1440 }; f.root.batch = { files: [file] }
   await f.watcher.scan()
   const job = f.store.data.jobs[0]
   job.seasonNumber = 1; job.episodeNumber = 1; job.seasonReview = '旧剧集信息'

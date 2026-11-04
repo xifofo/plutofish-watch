@@ -193,7 +193,7 @@ test('单个电影按电影查询版本并登记，不发送季号集号；来�
 test('一次性混传两季、两种画质和制作组，各自登记版本且同集号不冲突', async () => {
   const f = await setup({ releases: () => releasePage([]) })
   f.root.mode = 'once'; f.root.versionMode = 'auto'; f.root.releaseId = ''
-  f.root.cleanup = { enabled: false, days: 1 }
+  f.root.cleanup = { enabled: false, minutes: 1440 }
   // 从第二季开始；整批默认季、发现顺序和首个文件不能决定其他文件的版本。
   f.root.seasonNumber = 2
   f.store.data.jobs = []
@@ -330,7 +330,7 @@ test('422 提示指出接口及字段，不暴露响应中的凭据、地址和�
 test('按天清理只删除已完成且 ED2K 已同步的原视频，保留历史与链接并通知服务端', async () => {
   let now = Date.now()
   const f = await setup({ retry: { now: () => now } })
-  f.store.data.retention = { enabled: true, days: 2 }
+  f.store.data.retention = { enabled: true, minutes: 2880 }
   const sidecar = join(f.root.path, 'Show.S01E01.nfo'); await writeFile(sidecar, 'keep')
   f.store.data.observations[f.root.id] = { [f.file]: { signature: f.job.signature, stableSince: now, jobId: f.job.id } }
   await until(f.publisher, () => f.job.status === 'completed' && f.job.synced === true && f.job.ed2kSaved === true)
@@ -356,13 +356,26 @@ test('按天清理只删除已完成且 ED2K 已同步的原视频，保留历�
   expect(f.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'start')).toHaveLength(1)
 })
 
+test('保留 30 分钟时按分钟到期，到期前不删除', async () => {
+  let now = Date.now()
+  const f = await setup({ retry: { now: () => now } })
+  f.store.data.retention = { enabled: true, minutes: 30 }
+  f.store.data.observations[f.root.id] = { [f.file]: { signature: f.job.signature, stableSince: now, jobId: f.job.id } }
+  await until(f.publisher, () => f.job.status === 'completed' && f.job.synced === true && f.job.ed2kSaved === true)
+  const deleteAt = f.job.retention!.deleteAt!
+  expect(deleteAt).toBeGreaterThanOrEqual(now + 30 * 60_000); expect(deleteAt).toBeLessThan(now + 31 * 60_000)
+  now = deleteAt - 1; await f.publisher.tick(); expect(existsSync(f.file)).toBe(true)
+  now += 60001; await f.publisher.tick()
+  expect(existsSync(f.file)).toBe(false); expect(f.job.retention?.state).toBe('deleted')
+})
+
 test.each(['retained', 'removed', 'symlink'] as const)('第二个本地目录可发布，清理仍检查当前目录归属和符号链接：%s', async kind => {
   let now = Date.now()
   const f = await setup({ retry: { now: () => now } })
   const original = f.root.path, primary = join(f.temp, 'primary')
   await mkdir(primary)
   f.root.path = primary; f.root.additionalPaths = [original]
-  f.store.data.retention = { enabled: true, days: 1 }
+  f.store.data.retention = { enabled: true, minutes: 1440 }
   await until(f.publisher, () => f.job.status === 'completed' && f.job.synced === true && f.job.ed2kSaved === true)
   if (kind === 'removed') applyWatchEdit(f.store, f.root, { ...f.root, additionalPaths: [] })
   if (kind === 'symlink') { await rename(original, original + '-moved'); await symlink(original + '-moved', original) }
@@ -394,9 +407,9 @@ test('关闭清理或延长天数立即阻止删除，重新开启后按原完�
   await until(f.publisher, () => f.job.status === 'completed' && f.job.ed2kSaved === true)
   now += 10 * 86400000; await f.publisher.tick()
   expect(existsSync(f.file)).toBe(true); expect(f.job.retention?.state).toBe('disabled')
-  f.store.data.retention = { enabled: true, days: 20 }; now += 60001; await f.publisher.tick()
+  f.store.data.retention = { enabled: true, minutes: 28800 }; now += 60001; await f.publisher.tick()
   expect(existsSync(f.file)).toBe(true); expect(f.job.retention?.state).toBe('retained')
-  f.store.data.retention = { enabled: false, days: 1 }; now += 60001; await f.publisher.tick()
+  f.store.data.retention = { enabled: false, minutes: 1440 }; now += 60001; await f.publisher.tick()
   expect(existsSync(f.file)).toBe(true)
   f.store.data.retention.enabled = true; now += 60001; await f.publisher.tick()
   expect(existsSync(f.file)).toBe(false)
@@ -405,7 +418,7 @@ test('关闭清理或延长天数立即阻止删除，重新开启后按原完�
 test.each(['directory', 'global', 'removed', 'changed', 'symlink'] as const)('清理遵守暂停、归属与文件身份边界：%s', async kind => {
   let now = Date.now()
   const f = await setup({ retry: { now: () => now } })
-  f.store.data.retention = { enabled: true, days: 1 }
+  f.store.data.retention = { enabled: true, minutes: 1440 }
   await until(f.publisher, () => f.job.status === 'completed' && f.job.ed2kSaved === true)
   if (kind === 'directory') f.root.enabled = false
   if (kind === 'global') f.store.data.uploadsPaused = true
@@ -421,7 +434,7 @@ test.each(['directory', 'global', 'removed', 'changed', 'symlink'] as const)('�
 test('ED2K 已生成但同步失败时到期也不删除；恢复同步后才清理', async () => {
   let now = Date.now(), fail = true
   const f = await setup({ retry: { now: () => now }, reply: path => path === 'files/ed2k' && fail ? { status: 503 } : undefined })
-  f.store.data.retention = { enabled: true, days: 1 }
+  f.store.data.retention = { enabled: true, minutes: 1440 }
   await until(f.publisher, () => f.job.status === 'completed' && f.job.synced === true && f.job.ed2k?.state === 'done')
   now += 2 * 86400000; await f.publisher.tick()
   expect(existsSync(f.file)).toBe(true); expect(f.job.ed2kSaved).toBe(false)
@@ -434,7 +447,7 @@ test('ED2K 已生成但同步失败时到期也不删除；恢复同步后才清
 test('删除后通知服务端失败保留清单，重启补发通知而不重新上传', async () => {
   let now = Date.now(), fail = true
   const f = await setup({ retry: { now: () => now }, reply: path => path === 'range-proofs/forget' && fail ? { status: 503 } : undefined })
-  f.store.data.retention = { enabled: true, days: 1 }
+  f.store.data.retention = { enabled: true, minutes: 1440 }
   await until(f.publisher, () => f.job.status === 'completed' && f.job.ed2kSaved === true)
   now += 2 * 86400000; await f.publisher.tick()
   expect(existsSync(f.file)).toBe(false); expect(f.job.retention?.state).toBe('deleted')
@@ -1369,9 +1382,9 @@ for (const cleanup of [false, true]) test(`一次性发布完成并同步 ED2K�
   const f = await setup({ retry: { now: () => now } })
   const { createOneTimeBatch } = await import('../src/main/one-time')
   await writeFile(join(f.root.path, 'poster.nfo'), 'sidecar')
-  f.root.mode = 'once'; f.root.cleanup = { enabled: cleanup, days: 3 }
+  f.root.mode = 'once'; f.root.cleanup = { enabled: cleanup, minutes: 4320 }
   f.root.batch = await createOneTimeBatch(f.root.path, f.root.cleanup)
-  f.store.data.retention = { enabled: true, days: 1 }; f.store.save()
+  f.store.data.retention = { enabled: true, minutes: 1440 }; f.store.save()
   await until(f.publisher, () => f.root.batch!.completedAt !== undefined)
   expect(f.job.ed2kSaved).toBe(true); expect(f.job.ed2k?.state).toBe('done')
   expect(f.job.synced).toBe(true)

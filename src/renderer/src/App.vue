@@ -9,7 +9,7 @@ import SourceFields from './SourceFields.vue'
 import RetentionSettings from './RetentionSettings.vue'
 import OneTimeList from './OneTimeList.vue'
 import UpdateDialog from './UpdateDialog.vue'
-import { defaultRetention } from '../../shared/retention'
+import { defaultRetention, formatRetention } from '../../shared/retention'
 import { watchPaths } from '../../shared/watch-paths'
 import watchFoldersArt from './assets/watch-folders.png'
 import brandIcon from '../../../resources/icon.png'
@@ -100,7 +100,7 @@ onUnmounted(() => { unsubscribe?.(); unsubscribeUpdate?.() })
       <div class="sidebar-version">v{{ appVersion }}<button v-if="update?.release" class="update-chip" :title="`可更新到 v${update.release.version}`" @click="checkUpdate"><span />新版本 v{{ update.release.version }}</button></div>
     </aside>
     <main>
-      <div class="topbar"><span><span class="tiny-dot" :class="{ online: active > 0 }" />{{ active ? `${active} 个目录监控中` : '目录监控' }}</span><span class="retention-note"><Icon name="check" :size="13" />{{ state.retention.enabled ? `监控文件 ${state.retention.days} 天后清理` : '监控文件保留' }}</span></div>
+      <div class="topbar"><span><span class="tiny-dot" :class="{ online: active > 0 }" />{{ active ? `${active} 个目录监控中` : '目录监控' }}</span><span class="retention-note"><Icon name="check" :size="13" />{{ state.retention.enabled ? `监控文件 ${formatRetention(state.retention.minutes)}后清理` : '监控文件保留' }}</span></div>
       <div class="content">
         <div v-if="state.fatalError" class="notice error" role="alert">{{ state.fatalError }}</div>
         <div v-if="error" class="notice error dismissible" role="alert">{{ error }}<button class="icon-button" aria-label="关闭错误" @click="error = ''"><Icon name="close" :size="16" /></button></div>

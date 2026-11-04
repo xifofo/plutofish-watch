@@ -8,7 +8,7 @@ import { lockLocalFileDeletion } from '../../vendor/publisher/src/lib/local-file
 import { isVideoFile, sameSignature, scanTree, selectedVideoFiles, signature, within } from './files'
 import type { WatchStore } from './store'
 
-const DAY = 24 * 3600_000
+const MINUTE = 60_000
 
 function folderEntries(root: string): FolderEntry[] {
   const entries: FolderEntry[] = [], pending = [root]
@@ -57,7 +57,7 @@ export function validateOneTimeRoot(root: WatchRoot): void {
     || (selected && (!Array.isArray(root.selectedFiles) || root.selectedFiles.length !== batch.files.length
       || root.selectedFiles.some((path, index) => path !== batch.files[index] || dirname(path) !== root.path || !isVideoFile(path))))
     || [batch.completedAt, batch.deleteAt, batch.deletingAt, batch.deletedAt].some(time => time !== undefined && (!Number.isFinite(time) || time < 0))
-    || (batch.deleteAt !== undefined && (batch.completedAt === undefined || batch.deleteAt < batch.completedAt + root.cleanup.days * DAY))) {
+    || (batch.deleteAt !== undefined && (batch.completedAt === undefined || batch.deleteAt < batch.completedAt + root.cleanup.minutes * MINUTE))) {
     throw new Error('一次性上传记录损坏，请保留数据文件后修复')
   }
   if (root.cleanup.enabled && (!Array.isArray(batch.entries) || !batch.entries.length)) throw new Error('目录清理清单损坏')
@@ -172,7 +172,7 @@ export class OneTimeBatches {
           job!.ed2k = structuredClone(original!.ed2k); job!.ed2kSaved = true; job!.synced = true
         }
         batch.completedAt = now
-        if (root.cleanup?.enabled) batch.deleteAt = now + root.cleanup.days * DAY
+        if (root.cleanup?.enabled) batch.deleteAt = now + root.cleanup.minutes * MINUTE
         this.store.save(); this.changed()
       }
       if (!clean || !root.cleanup?.enabled || batch.deleteAt === undefined || now < batch.deleteAt || batch.cleanupError) continue
