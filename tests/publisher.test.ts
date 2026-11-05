@@ -523,6 +523,68 @@ test('真正断开本地 HTTP 连接后自动重连并完成任务，无需点�
   expect(f.calls.filter(c => c.path === 'me').length).toBeGreaterThan(1)
 })
 
+test('首次登记后的进度上报持续断线不阻塞上传，重启补报完成状态且不重复上传', async () => {
+  let reports = 0, offline = true
+  const f = await setup({ reply: path => path === 'tasks/report' && ++reports > 1 && offline ? 'disconnect' : undefined })
+  await until(f.publisher, () => f.job.status === 'completed' && !f.job.synced)
+  expect(f.connection.ready).toBe(true)
+  expect(f.connection.view().reconnect).toBeUndefined()
+  expect(f.job.retry).toBeUndefined()
+  expect(f.job.errorDetails?.stage).toBe('同步任务状态')
+  const key = f.job.fileKey
+  expect(f.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'start')).toHaveLength(1)
+  expect(f.calls.filter(c => c.path === 'files/report')).toHaveLength(1)
+  offline = false
+  await f.publisher.close()
+  const publisher = new WatchPublisher(f.store, f.connection, f.temp, () => {}, error => { throw error })
+  disposers.push(() => publisher.close()); publisher.start()
+  await until(publisher, () => f.job.status === 'completed' && f.job.synced === true)
+  expect(f.job.fileKey).toBe(key); expect(f.job.error).toBe('')
+  expect(f.calls.filter(c => c.path === 'uploads/prepare' && c.body.action === 'start')).toHaveLength(1)
+  expect(f.calls.filter(c => c.path === 'files/report')).toHaveLength(1)
+})
+
+test('首次任务登记尚未成功时保留队列，不绕过服务端上传授权', async () => {
+  const f = await setup({ reply: path => path === 'tasks/report' ? 'disconnect' : undefined })
+  await until(f.publisher, () => !!f.job.errorDetails)
+  expect(f.calls.some(c => c.path === 'uploads/prepare')).toBe(false)
+  expect(f.job.synced).toBe(false)
+})
+
+test('传输中进度上报的真实套接字断开不取消 PUT，仍可完成资源登记', async () => {
+  let offline = false, release!: () => void, uploadSignal: AbortSignal | undefined
+  const f = await setup({ retry: { factory: (_dispatch, _credentials, signal) => ({ close() {}, client: {
+    async initMultipartUpload() { return { uploadId: 'UPLOAD-1' } as any },
+    async listParts() { throw new Error('新上传不能查询空分片') },
+    async uploadPart(_name, _id, _part, buffer) {
+      uploadSignal = signal
+      await new Promise<void>((resolve, reject) => {
+        const aborted = () => reject(signal.reason)
+        signal.addEventListener('abort', aborted, { once: true })
+        release = () => { signal.removeEventListener('abort', aborted); resolve() }
+      })
+      return { etag: createHash('md5').update(buffer).digest('hex') } as any
+    },
+    async completeMultipartUpload() { return { data: { state: true } } as any },
+  } }) }, reply: (path, body) => {
+    if (path === 'tasks/report' && offline) return 'disconnect'
+    if (path !== 'uploads/prepare') return undefined
+    if (body.action === 'start') return { body: { dispatch: { status: 'uploading', bucket: 'bucket', object: 'object', pickCode: 'original', callback: '{}' } } }
+    if (body.action === 'credentials') return { body: { credentials: { accessKeyId: 'fake', accessKeySecret: 'fake', securityToken: 'fake', expiration: new Date(Date.now() + 3600000).toISOString(), rate: 0 } } }
+    return undefined
+  } })
+  await until(f.publisher, () => !!uploadSignal)
+  offline = true
+  const snapshot = f.calls.find(c => c.path === 'tasks/report')!.body
+  await expect(f.connection.request(f.root.binding, 'tasks/report', snapshot)).rejects.toThrow('网络连接中断')
+  expect(f.connection.ready).toBe(true); expect(uploadSignal?.aborted).toBe(false)
+  expect(f.job.status).toBe('uploading')
+  release()
+  await until(f.publisher, () => f.job.status === 'completed')
+  expect(f.job.retry).toBeUndefined()
+  expect(f.calls.filter(c => c.path === 'files/report')).toHaveLength(1)
+})
+
 test('等待重试期间暂停目录、全局暂停或手动暂停均不放行；取消任务不复活', async () => {
   let now = 100000
   const f = await setup({ loseFirstReport: true, retry: { now: () => now, baseMs: 100 } })
@@ -571,18 +633,21 @@ test('重试前文件被替换时停止，旧失败快照不得恢复自动重�
   expect(store.data.jobs[0].retry?.nextAt).toBeUndefined()
 })
 
-test('分片断网后自动续传原 uploadId，已确认第一片不重传，ED2K 与完成状态正常同步', async () => {
-  let now = 100000, failed = false, init = 0, merges = 0
+test.each(['分片', '凭据连接'])('%s 断网后自动续传原 uploadId，已确认第一片不重传，ED2K 与完成状态正常同步', async failure => {
+  let now = 100000, failed = false, init = 0, merges = 0, credentials = 0
   const parts = new Map<number, { PartNumber: number; ETag: string; Size: string }>(), puts: number[] = []
   const f = await setup({
-    retry: { now: () => now, baseMs: 100, factory: () => ({ close() {}, client: {
+    connection: { retryBaseMs: 20, retryMaxMs: 40 },
+    retry: { now: () => now, baseMs: 100, factory: (_dispatch, token) => ({ close() {}, client: {
       async initMultipartUpload() { init++; return { uploadId: 'UPLOAD-1' } as any },
       async listParts() { return { uploadId: 'UPLOAD-1', bucket: 'bucket', name: 'object', parts: [...parts.values()], isTruncated: false } as any },
       async uploadPart(_name, id, number, buffer) {
         expect(id).toBe('UPLOAD-1'); puts.push(number)
-        if (number === 2 && !failed) { failed = true; throw Object.assign(new Error('local test disconnect'), { code: 'ECONNRESET' }) }
+        if (failure === '分片' && number === 2 && !failed) { failed = true; throw Object.assign(new Error('local test disconnect'), { code: 'ECONNRESET' }) }
         const etag = createHash('md5').update(buffer).digest('hex')
         parts.set(number, { PartNumber: number, ETag: etag, Size: String(buffer.length) })
+        // 第一片持久化后模拟临时凭据即将过期，下一片必须重新请求主服。
+        if (failure === '凭据连接' && number === 1) token.expiration = new Date(Date.now() + 60_000).toISOString()
         return { etag } as any
       },
       async completeMultipartUpload() { merges++; return { data: { state: true } } as any },
@@ -590,7 +655,10 @@ test('分片断网后自动续传原 uploadId，已确认第一片不重传，ED
     reply: (path, body) => {
       if (path !== 'uploads/prepare') return undefined
       if (body.action === 'start') return { body: { dispatch: { status: 'uploading', bucket: 'bucket', object: 'object', pickCode: 'original', callback: '{}' } } }
-      if (body.action === 'credentials') return { body: { credentials: { accessKeyId: 'fake', accessKeySecret: 'fake', securityToken: 'fake', expiration: new Date(Date.now() + 3600000).toISOString(), rate: 0 } } }
+      if (body.action === 'credentials') {
+        if (++credentials === 2 && failure === '凭据连接') { failed = true; return 'disconnect' }
+        return { body: { credentials: { accessKeyId: 'fake', accessKeySecret: 'fake', securityToken: 'fake', expiration: new Date(Date.now() + 3600000).toISOString(), rate: 0 } } }
+      }
       return undefined
     },
   })
@@ -598,13 +666,13 @@ test('分片断网后自动续传原 uploadId，已确认第一片不重传，ED
   f.job.signature = await safeFile(f.root.path, f.file)
   await until(f.publisher, () => f.job.status === 'failed')
   expect(f.job.retry?.nextAt).toBe(now + 100)
-  expect(puts).toEqual([1, 2])
+  expect(puts).toEqual(failure === '分片' ? [1, 2] : [1])
   expect(parts.get(1)?.Size).toBe(String(16 * 1024 * 1024))
   const key = f.job.fileKey
   now += 100
   await until(f.publisher, () => f.job.status === 'completed' && f.job.ed2kSaved === true && f.job.synced === true)
   expect(f.job.fileKey).toBe(key)
-  expect(puts).toEqual([1, 2, 2]); expect(init).toBe(1); expect(merges).toBe(1)
+  expect(puts).toEqual(failure === '分片' ? [1, 2, 2] : [1, 2]); expect(init).toBe(1); expect(merges).toBe(1)
   expect(f.calls.filter(c => c.path === 'files/report')).toHaveLength(1)
 })
 

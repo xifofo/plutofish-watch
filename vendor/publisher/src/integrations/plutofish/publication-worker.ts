@@ -21,6 +21,7 @@ import { PublicationCleanup } from './publication-cleanup.ts'
 import { PublicationRetention, type RetentionOptions } from './publication-retention.ts'
 import { localFileInUse, useLocalFile } from '../../lib/local-file-use.ts'
 import { probeFinishedMedia } from '../../lib/gvs-record.ts'
+import { UploadHeartbeat } from './upload-heartbeat.ts'
 
 const eligible = (draft: PublicationDraft) => !publicationMissing(draft).length
 const safeError = (error: unknown) => publicationFailure(error, '发布任务').message
@@ -51,6 +52,7 @@ export class PublicationWorker {
   private closed = false
   private readonly syncAbort = new AbortController()
   private readonly retryAt = new Map<string, number>()
+  private readonly syncRetryAt = new Map<string, number>()
   private readonly failureRetryAt = new Map<string, number>()
   private readonly syncErrors = new Map<string, PublisherError>()
 
@@ -66,6 +68,7 @@ export class PublicationWorker {
       this.store.removeCompleted(state)
       this.states.delete(state.draft.fileKey)
       this.retryAt.delete(state.draft.fileKey)
+      this.syncRetryAt.delete(state.draft.fileKey)
       this.failureRetryAt.delete(state.draft.fileKey)
       this.syncErrors.delete(state.draft.fileKey)
     }, options.beforeCleanup, state => this.retention.deleted(state))
@@ -246,6 +249,7 @@ export class PublicationWorker {
     if (action === 'pause' || action === 'cancel') this.update(state, { stage: action === 'pause' ? 'paused' : 'cancelled', errorMessage: '' })
     else {
       this.retryAt.delete(key)
+      this.syncRetryAt.delete(key)
       if (action === 'download') {
         state.draft.output = ''
         state.draft.measured = undefined
@@ -287,7 +291,7 @@ export class PublicationWorker {
       for (const state of this.states.values()) {
         if (this.closed) return
         this.holdAutomaticUpload(state)
-        if ((!state.pendingFailures?.length && state.acknowledged >= state.snapshot.sequence) || (this.retryAt.get(state.draft.fileKey) ?? 0) > Date.now()) continue
+        if ((!state.pendingFailures?.length && state.acknowledged >= state.snapshot.sequence) || (this.syncRetryAt.get(state.draft.fileKey) ?? 0) > Date.now()) continue
         // 历史补报单独退避，不能因旧失败回执暂不可用而阻塞已经恢复的上传。
         const pending = state.pendingFailures ?? []
         const historyReady = (this.failureRetryAt.get(state.draft.fileKey) ?? 0) <= Date.now()
@@ -307,12 +311,13 @@ export class PublicationWorker {
             state.pendingFailures = state.pendingFailures?.filter(item => item.sequence !== snapshot.sequence || item.attempt !== snapshot.attempt)
             if (historical) this.failureRetryAt.delete(state.draft.fileKey)
             this.syncErrors.delete(state.draft.fileKey)
+            this.syncRetryAt.delete(state.draft.fileKey)
             this.store.save(state); this.publish(state)
           } catch (error) {
             if (historical) {
               this.failureRetryAt.set(state.draft.fileKey, Date.now() + 15_000)
               historyBlocked = true
-            } else this.retryAt.set(state.draft.fileKey, Date.now() + 15_000)
+            } else this.syncRetryAt.set(state.draft.fileKey, Date.now() + 15_000)
             // ED2K 等后台进度刷新不能清掉仍未成功同步的错误。
             this.syncErrors.set(state.draft.fileKey, publicationFailure(error, '同步任务状态'))
             // 失败上报的临时故障不能覆盖原上传失败原因；待同步标志单独保留。
@@ -324,7 +329,8 @@ export class PublicationWorker {
       try { this.retention.tick(this.states, this.syncAbort.signal) } catch { /* 无法读取策略或保存状态时不删除成品 */ }
       try { await this.cleanup.tick(this.states, this.syncAbort.signal) } catch { /* 清理失败保留原记录，下轮或重启后继续 */ }
       if (!this.closed) {
-        const eligible = [...this.states.values()].filter(s => this.uploadAllowed(s) && !this.uploadPauses.paused(s.draft.binding) && ['processing', 'uploading'].includes(s.snapshot.stage) && s.draft.output && !this.running.has(s.draft.fileKey) && s.acknowledged >= s.snapshot.sequence && (this.retryAt.get(s.draft.fileKey) ?? 0) <= Date.now())
+        // 首次登记是服务端上传授权的前提；之后的临时进度同步故障不阻塞准备、上传或续传。
+        const eligible = [...this.states.values()].filter(s => this.uploadAllowed(s) && !this.uploadPauses.paused(s.draft.binding) && ['processing', 'uploading'].includes(s.snapshot.stage) && s.draft.output && !this.running.has(s.draft.fileKey) && s.acknowledged > 0 && this.syncErrors.get(s.draft.fileKey)?.retryable !== false && (this.retryAt.get(s.draft.fileKey) ?? 0) <= Date.now())
         for (const state of eligible.filter(s => this.prepared.has(s.draft.fileKey))) {
           const grouped = this.connection.groupedUploads
           // 后台重验可能发现部署或回滚：原上传所有请求保持同一租约协议，排空后再切换。
@@ -388,17 +394,15 @@ export class PublicationWorker {
     const signal = abort.signal
     const draft = state.draft
     const client = grouped ? { clientId: this.clientId } : {}
-    let heartbeat: ReturnType<typeof setInterval> | undefined
-    let pulse: Promise<void> | undefined
     let heartbeatError: unknown
+    const heartbeat = new UploadHeartbeat(signal,
+      pulseSignal => this.connection.request(draft.binding, 'uploads/prepare', { taskKey: draft.fileKey, ...client, action: 'heartbeat' }, pulseSignal),
+      error => { if (!signal.aborted) { heartbeatError = error; abort.abort(error) } })
     const request = async (action: string, extra = {}) => {
       this.uploadPauses.assert(draft.binding)
+      const started = Date.now()
       const reply = await this.connection.request<UploadReply>(draft.binding, 'uploads/prepare', { taskKey: draft.fileKey, ...client, action, ...extra }, signal)
-      if (!heartbeat) heartbeat = setInterval(() => {
-        if (pulse || signal.aborted) return
-        pulse = this.connection.request(draft.binding, 'uploads/prepare', { taskKey: draft.fileKey, ...client, action: 'heartbeat' }, signal)
-          .then(() => {}).catch(error => { if (!signal.aborted) { heartbeatError = error; abort.abort() } }).finally(() => { pulse = undefined })
-      }, 20_000)
+      heartbeat.confirmed(started)
       return reply
     }
     try {
@@ -490,8 +494,7 @@ export class PublicationWorker {
         this.update(state, { stage: 'failed', errorMessage: failure.message })
       }
     } finally {
-      if (heartbeat) clearInterval(heartbeat)
-      await pulse
+      await heartbeat.close()
       // 当前 PUT 已结束或取消后释放；断网/撤权时让服务端占用自然过期。
       await this.connection.request(draft.binding, 'uploads/prepare', { taskKey: draft.fileKey, ...client, action: 'release' }, AbortSignal.timeout(5000)).catch(() => {})
     }
@@ -542,6 +545,7 @@ export class PublicationWorker {
     Object.assign(state, next)
     this.prepared.delete(draft.fileKey)
     this.retryAt.delete(draft.fileKey)
+    this.syncRetryAt.delete(draft.fileKey)
     this.syncErrors.delete(draft.fileKey)
     this.publish(state)
   }

@@ -110,10 +110,14 @@ export class PlutoFishConnection {
     const stage = path === 'uploads/prepare' ? uploadActions[String((body as { action?: unknown })?.action)] ?? '上传调度'
       : ({ 'tasks/report': '同步任务状态', 'files/report': '登记资源', 'files/check': '检查重复文件', 'files/ed2k': '同步 ED2K' } as Record<string, string>)[path] ?? path
     const requestSignal = AbortSignal.any([this.requestAbort.signal, ...(signal ? [signal] : [])])
+    // 后台状态/摘要上报和租约心跳各自重试，单次断线不能撤销已验证身份或取消上传请求。
+    // HTTP 撤权仍走下方统一权限处理；心跳失败是否中止由上传租约窗口决定。
+    const background = ['tasks/report', 'files/ed2k', 'files/media', 'range-proofs/pending', 'range-proofs/report', 'range-proofs/forget'].includes(path) ||
+      (path === 'uploads/prepare' && (body as { action?: unknown })?.action === 'heartbeat')
     const failed = (error: unknown) => {
       const failure = transportError(error, requestSignal)
       failure.diagnostic = failureDetails(error, stage)
-      if (key === this.saved.key && binding.url === this.saved.url && !this.closed && failure.retryable) this.disconnected(failure)
+      if (!background && key === this.saved.key && binding.url === this.saved.url && !this.closed && failure.retryable) this.disconnected(failure)
       return failure
     }
     let response: Response
