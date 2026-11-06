@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import type { DiskState, WatchJob, WatchRoot } from '../shared/model'
 import { defaultRetention, validateRetention } from '../shared/retention'
 import { validateWatchPaths } from '../shared/watch-paths'
-import { validateOneTimeRoot } from './one-time'
+import { releaseOneTimeFile, validateOneTimeRoot } from './one-time'
 import { jobTarget } from '../shared/job-target'
 
 export function atomicJSON(path: string, data: unknown): void {
@@ -52,6 +52,11 @@ export class WatchStore {
       }
       delete job.transfer
       if (job.status === 'preparing') job.status = 'queued'
+    }
+    // 升级前已取消的一次性文件也释放路径；以该路径最后一条任务为准。
+    for (const root of value.watches.filter(root => root.mode === 'once')) {
+      const latest = new Map(value.jobs.filter(job => job.watchId === root.id).map(job => [job.path, job]))
+      for (const job of latest.values()) if (job.status === 'cancelled') releaseOneTimeFile(root, job.path)
     }
   }
   save(): void {

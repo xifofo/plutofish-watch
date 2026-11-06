@@ -5,7 +5,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WatchStore } from '../src/main/store'
-import { createOneTimeBatch, OneTimeBatches } from '../src/main/one-time'
+import { createOneTimeBatch, OneTimeBatches, releaseOneTimeFile } from '../src/main/one-time'
 import { DirectoryWatcher } from '../src/main/watcher'
 import { defaultOneTimeRetention } from '../src/shared/retention'
 import { useLocalFile } from '../vendor/publisher/src/lib/local-file-use'
@@ -54,6 +54,20 @@ test('一次性只入队初始视频，补扫和重启均不增加后来文件',
   expect(restored.data.jobs).toHaveLength(1)
   expect(restored.data.jobs[0].path).toBe(f.file)
   expect(restored.data.jobs[0].status).toBe('queued')
+})
+
+test.each([true, false])('已释放路径的旧批次收到迟到成功也不再清理文件，文件选择：%s', async selected => {
+  const f = await fixture(true, selected)
+  const originalFiles = [...f.root.batch!.files]
+  releaseOneTimeFile(f.root, f.file)
+  expect(f.root.batch!.files).toEqual(originalFiles)
+  // 取消前已发出的请求仍可能成功，但不能重新取得旧批次的删除权限。
+  f.complete(); f.root.cleanup!.enabled = true
+  f.manager.tick(); f.advance(4 * DAY); f.manager.tick()
+  expect(f.root.batch!.completedAt).toBeUndefined()
+  expect(f.root.batch!.deletedAt).toBeUndefined()
+  expect(existsSync(f.file)).toBe(true)
+  expect(existsSync(f.sidecar)).toBe(true)
 })
 
 test('所有上传、状态和 ED2K 同步完成才计时，三天未到不删，到期删除目录和附属文件', async () => {

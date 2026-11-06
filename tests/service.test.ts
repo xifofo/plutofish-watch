@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, realpath, rm, rename } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { createServer } from 'node:http'
+import { WatchStore } from '../src/main/store'
 
 mock.module('electron', () => ({ safeStorage: {
   isEncryptionAvailable: () => true,
@@ -247,4 +248,66 @@ test('一次性文件任务允许同目录不同文件，拒绝重复、监控�
   const later = join(path, 'Show.S01E04.mp4'); await writeFile(later, 'later')
   await service.add({ ...root, mode: 'once', path, selectedFiles: [later] })
   expect(service.store.data.watches.at(-1)!.batch!.files).toEqual([later])
+})
+
+test.each([true, false])('一次性混合批次取消单文件后可重加，其他文件仍占用，文件选择：%s', async selected => {
+  const { service, root, temp } = await setup()
+  const path = join(temp, 'cancelled-batch'); await mkdir(path)
+  const files = [1, 2].map(n => join(path, `Show.S01E0${n}.mp4`))
+  for (const file of files) await writeFile(file, 'original')
+  await service.add({ ...root, mode: 'once', path, selectedFiles: selected ? files : undefined, cleanup: { enabled: true, minutes: 1440 } })
+  const once = service.store.data.watches.at(-1)!
+  const originalFiles = [...once.batch!.files]
+  const old = service.store.data.jobs.find(job => job.watchId === once.id && job.path === files[0])!
+  old.error = '原版本校验提示'
+  await service.job({ id: old.id, action: 'cancel' })
+  expect(once.batch!.releasedFiles).toEqual([files[0]])
+  expect(once.cleanup!.enabled).toBe(false)
+  expect(once.batch!.files).toEqual(originalFiles)
+  expect(old).toMatchObject({ status: 'cancelled', error: '原版本校验提示' })
+  await service.add({ ...root, mode: 'once', path, selectedFiles: [files[0]] })
+  const next = service.store.data.jobs.at(-1)!
+  expect(next.path).toBe(old.path); expect(next.id).not.toBe(old.id)
+  for (const file of files) await expect(service.add({ ...root, mode: 'once', path, selectedFiles: [file] })).rejects.toThrow('重叠')
+  await writeFile(files[0], 'changed after cancellation')
+  await service.watcher.scanOne(once)
+  expect(service.store.data.jobs.filter(job => job.watchId === once.id)).toHaveLength(2)
+  expect(old.status).toBe('cancelled')
+  const restored = new WatchStore(service.store.path)
+  expect(restored.data.watches.find(root => root.id === once.id)!.batch!.releasedFiles).toEqual([files[0]])
+})
+
+test.each([true, false])('一次性全部取消后可重新选择原目录或文件，文件选择：%s', async selected => {
+  const { service, root, temp } = await setup()
+  const path = join(temp, 'cancelled-all'); await mkdir(path)
+  const file = join(path, 'Show.S01E01.mp4'); await writeFile(file, 'original')
+  const input = { ...root, mode: 'once' as const, path, selectedFiles: selected ? [file] : undefined, cleanup: { enabled: true, minutes: 1440 } }
+  await service.add(input)
+  const once = service.store.data.watches.at(-1)!
+  const old = service.store.data.jobs.find(job => job.watchId === once.id)!
+  await service.job({ id: old.id, action: 'cancel' })
+  await service.add(input)
+  expect(service.store.data.watches.at(-1)!.id).not.toBe(once.id)
+  expect(service.store.data.jobs.filter(job => job.path === file).map(job => job.status)).toEqual(['cancelled', 'waiting'])
+  await expect(service.add(input)).rejects.toThrow('重叠')
+})
+
+test('升级前已取消的一次性任务重启后释放占用，不复活旧任务', async () => {
+  const { service, root, temp } = await setup()
+  const path = join(temp, 'legacy-cancelled'); await mkdir(path)
+  const file = join(path, 'Show.S01E01.mp4'); await writeFile(file, 'original')
+  const input = { ...root, mode: 'once' as const, path, cleanup: { enabled: true, minutes: 1440 } }
+  await service.add(input)
+  const once = service.store.data.watches.at(-1)!
+  const old = service.store.data.jobs.find(job => job.watchId === once.id)!
+  old.status = 'cancelled'; old.manuallyPaused = true
+  service.store.save()
+  const url = service.snapshot().connection.url
+  await service.close()
+  const restarted = new WatchService(join(temp, 'app'), () => {})
+  cleanup.push(() => restarted.close())
+  await restarted.connect({ url, key: 'offline-only' })
+  expect(restarted.store.data.watches.find(root => root.id === once.id)!.cleanup!.enabled).toBe(false)
+  await restarted.add(input)
+  expect(restarted.store.data.jobs.filter(job => job.path === file).map(job => job.status)).toEqual(['cancelled', 'waiting'])
 })

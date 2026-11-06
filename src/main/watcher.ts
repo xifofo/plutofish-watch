@@ -107,6 +107,7 @@ export class DirectoryWatcher {
           files = new Map()
           for (const path of root.batch!.files) {
             if (!root.enabled || this.abort.signal.aborted) return
+            if (root.batch!.releasedFiles?.includes(path)) continue
             try { files.set(path, await safeFile(directory, path)) }
             catch (error) {
               if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error

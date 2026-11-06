@@ -20,7 +20,7 @@ import { searchWorks } from './work-search'
 import { recognitionSample, recognizeFile } from './recognition'
 import { applyWatchEdit } from './watch-edit'
 import { watchVersionChoices } from './versions'
-import { createOneTimeBatch } from './one-time'
+import { createOneTimeBatch, releaseOneTimeFile } from './one-time'
 import type { RetentionOptions } from '../../vendor/publisher/src/integrations/plutofish/publication-retention'
 
 /** 首次扫描忽略的历史文件按 PlutoFish 进度核对的间隔 */
@@ -146,6 +146,8 @@ export class WatchService {
     const release = releases.find(r => r.id === input.releaseId)
     if (input.versionMode !== 'auto' && !release) throw new Error('版本已变化，请重新查询并选择')
     const binding = bindingFor(this.connection.view(), input.sourceAccountId)
+    // 查询版本期间可能有另一份添加请求完成，写入前再次核对路径占用。
+    this.checkLocalOverlap({ ...input, path: paths[0], additionalPaths: paths.slice(1) }, batch)
     this.store.data.watches.push({
       ...input, batch, path: paths[0], additionalPaths: paths.slice(1), binding, id: randomUUID(), releaseName: input.versionMode === 'auto' ? '自动归类' : release!.name,
       releaseVersion: release ? { name: release.name, resolution: release.resolution, dynamicRange: release.dynamicRange } : undefined,
@@ -173,7 +175,7 @@ export class WatchService {
     const filesOnly = (root: WatchInput) => root.mode === 'once' && (root.selectedFiles !== undefined || !root.cleanup?.enabled)
     const existing = this.store.data.watches.filter(w => w.id !== excludingId && !w.batch?.deletedAt)
     const directories = existing.filter(w => !filesOnly(w)).flatMap(watchPaths)
-    const files = new Set(existing.filter(filesOnly).flatMap(w => w.batch!.files))
+    const files = new Set(existing.filter(filesOnly).flatMap(w => w.batch!.files.filter(path => !w.batch!.releasedFiles?.includes(path))))
     const overlap = filesOnly(input)
       ? batch!.files.some(path => files.has(path) || directories.some(directory => within(directory, path)))
       : watchPaths(input).some(path => directories.some(other => within(other, path) || within(path, other)) || [...files].some(file => within(path, file)))
@@ -315,6 +317,8 @@ export class WatchService {
       await this.publisher.stopJob(job, 'pause')
     } else if (input.action === 'cancel' && !['completed', 'duplicate', 'cancelled'].includes(job.status)) {
       job.status = 'cancelled'; job.manuallyPaused = true; delete job.retry
+      const current = this.store.data.watches.find(root => root.id === job.watchId)
+      if (current) releaseOneTimeFile(current, job.path)
       this.store.save()
       await this.publisher.stopJob(job, 'cancel')
     } else if (input.action === 'confirmSource') {

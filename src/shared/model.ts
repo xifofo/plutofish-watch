@@ -58,6 +58,8 @@ export type Signature = { size: number; mtimeMs: number; ctimeMs: number; ino: n
 export type FolderEntry = { path: string; kind: 'file' | 'directory'; signature: Signature; birthtimeMs: number }
 export type OneTimeBatch = {
   files: string[]; entries?: FolderEntry[]
+  /** 已取消文件释放路径占用；保留原清单及历史，不再扫描或清理这些文件。 */
+  releasedFiles?: string[]
   completedAt?: number; deleteAt?: number; deletingAt?: number; deletedAt?: number; cleanupError?: string
 }
 export type Observation = {

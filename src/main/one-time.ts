@@ -42,6 +42,14 @@ export async function createOneTimeBatch(path: string, cleanup: LocalRetentionSe
   return { files, entries: cleanup.enabled ? folderEntries(path) : undefined }
 }
 
+/** 取消后允许另建任务；旧批次不再扫描该路径，也不能按旧计划删除本地文件。 */
+export function releaseOneTimeFile(root: WatchRoot, path: string): void {
+  if (root.mode !== 'once' || !root.batch?.files.includes(path)) return
+  root.batch.releasedFiles = [...new Set([...(root.batch.releasedFiles ?? []), path])]
+  root.cleanup = { ...root.cleanup!, enabled: false }
+  delete root.batch.deleteAt
+}
+
 /** 损坏的批次记录必须停止启动，不能退化为持续监控或扩大删除范围。 */
 export function validateOneTimeRoot(root: WatchRoot): void {
   if (root.mode !== undefined && !['watch', 'once'].includes(root.mode)) throw new Error('目录任务类型记录损坏')
@@ -54,6 +62,8 @@ export function validateOneTimeRoot(root: WatchRoot): void {
   if (!isAbsolute(root.path) || resolve(root.path) !== root.path || (root.additionalPaths?.length ?? 0) > 0
     || !batch || !Array.isArray(batch.files) || !batch.files.length || batch.files.some(path => !validPath(path))
     || new Set(batch.files).size !== batch.files.length
+    || (batch.releasedFiles !== undefined && (!Array.isArray(batch.releasedFiles)
+      || new Set(batch.releasedFiles).size !== batch.releasedFiles.length || batch.releasedFiles.some(path => !batch.files.includes(path))))
     || (selected && (!Array.isArray(root.selectedFiles) || root.selectedFiles.length !== batch.files.length
       || root.selectedFiles.some((path, index) => path !== batch.files[index] || dirname(path) !== root.path || !isVideoFile(path))))
     || [batch.completedAt, batch.deleteAt, batch.deletingAt, batch.deletedAt].some(time => time !== undefined && (!Number.isFinite(time) || time < 0))
@@ -159,7 +169,7 @@ export class OneTimeBatches {
     if (clean) this.nextCleanup = now + 60_000
     for (const root of this.store.data.watches) {
       const batch = root.batch
-      if (root.mode !== 'once' || !batch || !this.eligible(root) || batch.deletedAt) continue
+      if (root.mode !== 'once' || !batch || batch.releasedFiles?.length || !this.eligible(root) || batch.deletedAt) continue
       const jobs = this.store.data.jobs.filter(j => j.watchId === root.id)
       const completed = batch.files.map(path => {
         const job = jobs.findLast(item => item.path === path)
