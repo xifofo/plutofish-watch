@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WatchStore } from '../src/main/store'
 import { DirectoryWatcher } from '../src/main/watcher'
-import { episodeFromName, seasonFromName } from '../src/main/files'
+import { episodeFromName, isVideoFile, seasonFromName, selectedVideoFiles } from '../src/main/files'
 import { applyWatchEdit } from '../src/main/watch-edit'
 import type { WatchRoot } from '../src/shared/model'
 
@@ -122,6 +122,23 @@ test('临时文件、隐藏目录及越界符号链接不被上传，集号不�
   await f.watcher.scan()
   expect(f.store.data.jobs).toHaveLength(1)
   expect(f.store.data.jobs[0].status).toBe('review')
+})
+
+test('编号 Part 文件可手动选择并在稳定后入队，临时文件仍跳过', async () => {
+  const f = await fixture()
+  const names = ['Show.S01E01.part.1.1080p.mkv', 'Show.S01E02.Part.02.mp4', 'Show.S01E03.part1.mkv', 'Show.S01E04.part-1.mkv', 'Show.S01E05.part 1.mkv']
+  const temporary = ['Show.part.mkv', 'Show.part.tmp.mp4', 'Show.part.1.tmp.mkv', 'Show.part.1.mkv.part', 'Show.part.1.crdownload.mp4', '.Show.part.1.mkv']
+  for (const name of [...names, ...temporary]) {
+    await writeFile(join(f.rootPath, name), name)
+    expect(isVideoFile(name)).toBe(names.includes(name))
+  }
+  const files = names.map(name => join(f.rootPath, name))
+  expect((await selectedVideoFiles(files)).files).toEqual(files)
+  await f.watcher.scan()
+  f.advance(10001)
+  await f.watcher.scan()
+  expect(f.store.data.jobs.map(job => job.path).sort()).toEqual([...files].sort())
+  expect(f.store.data.jobs.every(job => job.status === 'queued')).toBe(true)
 })
 
 test('暂停监控期间不入队，恢复后补扫', async () => {

@@ -46,8 +46,9 @@ export async function safeFile(root: string, path: string): Promise<Signature> {
 }
 
 export const videoExtensions = ['mp4', 'mkv', 'm4v', 'mov', 'avi', 'ts', 'm2ts', 'webm']
+// .part.1 等编号属于片名；无编号的 .part 和其他临时标记仍跳过。
 export const isVideoFile = (path: string) => videoExtensions.includes(extname(path).slice(1).toLowerCase())
-  && !basename(path).startsWith('.') && !/\.(?:part|tmp|temp|download|crdownload)(?:\.|$)/i.test(basename(path))
+  && !basename(path).startsWith('.') && !/\.(?:part(?!\.\d+(?=[. _-]|$))|tmp|temp|download|crdownload)(?:\.|$)/i.test(basename(path))
 
 /** 文件选择固定为同一目录中的普通视频；规范化父目录，不跟随文件链接。 */
 export async function selectedVideoFiles(input: string[]): Promise<{ path: string; files: string[] }> {

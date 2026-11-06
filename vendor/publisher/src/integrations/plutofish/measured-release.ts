@@ -1,4 +1,4 @@
-/** 本地成品自动归类：实际媒体优先，来源和特殊规格保守比较；只接受唯一候选。 */
+/** 本地成品自动归类：分辨率优先采用文件名，缺失时回退实测；其他规格保守比较。 */
 import { basename, extname } from 'node:path'
 import type { MediaSpecs } from '../../lib/actual-version'
 import { mediaFilenameTags, tierHeight } from '../../lib/name'
@@ -18,7 +18,7 @@ export function matchMeasuredRelease(items: ReleaseOption[], media: MediaSpecs, 
   const measuredAudio = media.audio.status === 'confirmed' ? audioCodec(media.audio.codec ?? '') : undefined
   const fps = Math.round(media.fps ?? 0)
   if (media.audio.status === 'confirmed' && (!measuredAudio || !media.audio.channels)) return { reason: '音轨规格无法确定，请选择版本' }
-  if (file && (file.height !== height || (file.codec && file.codec !== codec) ||
+  if (file && ((file.codec && file.codec !== codec) ||
     (file.range && file.range !== dynamic && !(file.rangeTag === 'HDR' && dynamic === 'HLG')) || (file.audio && file.audio !== measuredAudio) ||
     (file.channels && file.channels !== media.audio.channels) || (file.fps && file.fps !== fps))) return { reason: '文件名与实际媒体规格不符，请确认版本' }
   const reason = sourceReviewReason(releaseSource(stem, preset))
@@ -28,7 +28,7 @@ export function matchMeasuredRelease(items: ReleaseOption[], media: MediaSpecs, 
     : { canCreate: matches.length === 0, reason: matches.length > 1 ? '多个版本规格相同，请选择一次' : '未匹配到已有版本' }
 }
 
-/** 自动新建采用实际音视频规格，保留文件名中的来源、特殊标签及制作组；分集名不进入版本。 */
+/** 自动新建保留文件名分辨率、来源、特殊标签及制作组，其他音视频规格采用实测；分集名不进入版本。 */
 export function measuredReleaseVersion(media: MediaSpecs, path: string, season?: number, preset: ReleaseSource = {}) {
   const checked = matchMeasuredRelease([], media, path, preset)
   if (!checked.canCreate) throw new Error(checked.reason)
@@ -38,7 +38,7 @@ export function measuredReleaseVersion(media: MediaSpecs, path: string, season?:
 function buildVersion(media: MediaSpecs, path: string, season?: number, preset: ReleaseSource = {}) {
   const file = parse(basename(path, extname(path)), tierHeight(media.width ?? 0, media.height ?? 0))
   const source = releaseSource(basename(path, extname(path)), preset)
-  const resolution = `${tierHeight(media.width ?? 0, media.height ?? 0)}p`
+  const resolution = `${file?.height ?? tierHeight(media.width ?? 0, media.height ?? 0)}p`
   const dynamicRange = range(media.dynamicRange!)!
   const tags = mediaFilenameTags(media)
   const fps = Math.round(media.fps!)

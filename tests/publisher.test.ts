@@ -772,6 +772,23 @@ function sampleVideo(file: string, size: string) {
   expect(spawnSync(Bun.which('ffmpeg')!, ['-v', 'error', '-f', 'lavfi', '-i', `color=c=green:s=${size}:d=0.08`, '-c:v', 'libx264', '-preset', 'ultrafast', '-y', file]).status).toBe(0)
 }
 
+test('part.1 文件按文件名分辨率新建并上报，实测尺寸不同仍能完成发布', async () => {
+  const f = await setup({ releases: () => releasePage([]) })
+  f.root.work = { mediaType: 'movie', tmdbId: '456', category: 'movie' }
+  f.root.versionMode = 'auto'; f.root.releaseId = ''; delete f.root.seasonNumber
+  const name = 'Movie.2026.part.1.2160p.WEB.WEB-DL.AVC.mp4'
+  const file = join(f.root.path, name)
+  await rename(f.file, file); sampleVideo(file, '1280x720')
+  f.job.path = file; f.job.relativePath = name; f.job.signature = await safeFile(f.root.path, file)
+  await until(f.publisher, () => ['completed', 'review', 'failed'].includes(f.job.status))
+  expect(f.job.status).toBe('completed')
+  const report = f.calls.find(call => call.path === 'files/report')!.body
+  expect(report.name).toBe(name)
+  expect(report.releaseTarget.resolution).toBe('2160p')
+  expect(report.releaseTarget.name).toBe('2160p.WEB.WEB-DL.SDR.AVC')
+  expect(new WatchStore(f.store.path).data.jobs[0].release?.version?.resolution).toBe('2160p')
+})
+
 test('自动归类在同一目录分开画质；同版本重复内容仍跳过，重启保持归属', async () => {
   const f = await setup({ releases: () => releasePage() })
   f.root.versionMode = 'auto'; f.root.releaseId = ''; f.root.releaseName = '自动归类'

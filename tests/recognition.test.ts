@@ -79,3 +79,12 @@ test('直接选择文件只使用该文件名识别，不采样同目录其他�
   const selected = join(dir, 'Stars.S02E03.mkv'); await writeFile(selected, 'selected')
   expect(await recognitionSample(selected)).toEqual({ directoryName: basename(dir), fileName: 'Stars.S02E03.mkv', truncated: false })
 })
+
+test('编号 part.1 视频可用于目录取样和直接文件识别', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'watch-recognition-')); temporary.push(dir)
+  const name = 'Movie.part.1.2160p.mkv'
+  const file = join(dir, name)
+  await writeFile(file, 'video')
+  expect((await recognitionSample(dir)).fileName).toBe(`${basename(dir)}/${name}`)
+  expect((await recognitionSample(file)).fileName).toBe(name)
+})
