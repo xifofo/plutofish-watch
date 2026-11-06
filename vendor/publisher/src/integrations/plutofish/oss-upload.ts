@@ -110,11 +110,15 @@ export async function uploadParts(options: {
     rememberRoute()
     save()
   }
+  const listedParts = (page: OSS.ListPartsResult) => {
+    if (page.uploadId !== cp.uploadId || page.bucket !== dispatch.bucket || decodeURIComponent(page.name) !== dispatch.object) throw new Error('115 分片列表与原任务不匹配')
+    return (Array.isArray(page.parts) ? page.parts : [page.parts]).filter(part => !!part)
+  }
   try {
     const resuming = !!cp.uploadId
     if (!resuming) await initialize()
     // 只在续传时核对远端分片；新会话没有分片，不额外查询空列表。
-    // 没有本地持久化回执的片仍须重传。
+    // 暂停可能发生在远端接收后、本地回执落盘前；这类分片稍后用本地 MD5 核对，不能直接重传。
     const remote = new Map<number, { etag: string; size: number }>()
     let marker = 0
     for (; resuming;) {
@@ -137,9 +141,7 @@ export async function uploadParts(options: {
         await initialize()
         break
       }
-      if (page.uploadId !== cp.uploadId || page.bucket !== dispatch.bucket || decodeURIComponent(page.name) !== dispatch.object) throw new Error('115 分片列表与原任务不匹配')
-      const parts = Array.isArray(page.parts) ? page.parts : [page.parts]
-      for (const part of parts) if (part) remote.set(Number(part.PartNumber), { etag: part.ETag, size: Number((part as unknown as { Size: string }).Size) })
+      for (const part of listedParts(page)) remote.set(Number(part.PartNumber), { etag: part.ETag, size: Number((part as unknown as { Size: string }).Size) })
       if (String(page.isTruncated) !== 'true') break
       const next = Number(page.nextPartNumberMarker)
       if (!Number.isSafeInteger(next) || next <= marker || next > 10000) throw new Error('115 分片列表分页无效')
@@ -175,16 +177,37 @@ export async function uploadParts(options: {
       // 最多两片驻留内存，读取/MD5 与当前 PUT 重叠；上传仍严格按分片编号排序。
       prefetched = index + 1 < missing.length ? prefetch(missing[index + 1]!) : undefined
       await fileRange(path, 0, 0, cp.file, signal)
-      const sdk = await client()
-      const headers: Record<string, string> = { 'Content-MD5': md5.toString('base64') }
-      // OSS 单连接限速下限为 100 KiB/s；更小的分配额度由本地发送预算准确控制。
-      if (token!.rate > 0) headers['x-oss-traffic-limit'] = String(Math.max(102400, token!.rate) * 8)
-      const partOptions: OSS.RequestOptions & { headers: Record<string, string> } = { headers }
-      const result = await sdk.uploadPart(dispatch.object, cp.uploadId!, number, data, 0, data.length, partOptions)
-        .catch(error => { throw ossFailure(error, `上传第 ${number} 片`, number) })
+      let receipt = remote.get(number)
+      if (!receipt) {
+        const sdk = await client()
+        const headers: Record<string, string> = { 'Content-MD5': md5.toString('base64') }
+        // OSS 单连接限速下限为 100 KiB/s；更小的分配额度由本地发送预算准确控制。
+        if (token!.rate > 0) headers['x-oss-traffic-limit'] = String(Math.max(102400, token!.rate) * 8)
+        const partOptions: OSS.RequestOptions & { headers: Record<string, string> } = { headers }
+        try {
+          const result = await sdk.uploadPart(dispatch.object, cp.uploadId!, number, data, 0, data.length, partOptions)
+          receipt = { etag: result.etag, size: data.length }
+        } catch (error) {
+          signal.throwIfAborted()
+          if ((error as { code?: string })?.code !== 'PartAlreadyExist') throw ossFailure(error, `上传第 ${number} 片`, number)
+          // 上次 PUT 可能在续传列表返回后才落定；仅补查当前片，409 本身不代表成功。
+          const page = await (await client()).listParts(dispatch.object, cp.uploadId!, {
+            'max-parts': 1, 'part-number-marker': number - 1, 'encoding-type': 'url',
+          }).catch(error => { throw ossFailure(error, `核对第 ${number} 片`, number) })
+          signal.throwIfAborted()
+          const part = listedParts(page).find(part => Number(part.PartNumber) === number)
+          if (!part) throw ossFailure(error, `核对第 ${number} 片`, number)
+          receipt = { etag: part.ETag, size: Number((part as unknown as { Size: string }).Size) }
+        }
+      }
       // 本地 MD5 与远端 ETag 对齐，避免错误断点或文件被更换后拼接混合内容。
-      if (etag(result.etag) !== md5.toString('hex').toUpperCase()) throw new Error('115 分片校验失败')
-      cp.parts.push({ number, etag: result.etag, size: data.length })
+      if (receipt.size !== data.length || etag(receipt.etag) !== md5.toString('hex').toUpperCase()) {
+        throw new PublisherError(`115 第 ${number} 片与本地文件不一致，已保留断点，请核对原文件`, false, undefined,
+          { stage: '核对续传分片', code: 'InvalidPart', partNumber: number })
+      }
+      signal.throwIfAborted()
+      options.authorize?.()
+      cp.parts.push({ number, etag: receipt.etag, size: data.length })
       save(); uploaded += data.length; meter.sent(uploaded); progress(uploaded)
     }
     signal.throwIfAborted()

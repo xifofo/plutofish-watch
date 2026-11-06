@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "https://github.com/xifofo/gvs-tui",
-  "baseRevision": "1ec60fa2ccb6df54bcfe5d0176a2cf1f22604afe",
+  "baseRevision": "9416aa2fb8ae0f865101f81ce81a18e1ceea0bfe",
   "includesUncommittedChanges": false,
   "modifiedFiles": [],
   "entries": [
@@ -17,9 +17,9 @@
     "src/integrations/plutofish/connection.ts": "02e5570df58d030eb5a7b39f96b2aa0e2a760e34b4503e985f0e2b7a954c1d4c",
     "src/integrations/plutofish/ed2k-computer.ts": "eb1e4c51b5a61ddf024559da0fc18e216eb91cefa84ba8cc935c202559a5d1e3",
     "src/integrations/plutofish/measured-release.ts": "59cfd50ea15f45c3f724a8da53562a2a8d53b06419b0b3bbe691be6443d74b50",
-    "src/integrations/plutofish/oss-upload.ts": "828446c0d7c0178de58dbc71207db41555e17d6c9f798191c88baef91377fe65",
+    "src/integrations/plutofish/oss-upload.ts": "cf9f23ad53d7bcd9a930f026d006a5b838791375d9698f36590a40d919729a40",
     "src/integrations/plutofish/publication-cleanup.ts": "73efca6e63d90d45e84313bde304e7d9e4198b001fa0a7b5b8bd4534196d4413",
-    "src/integrations/plutofish/publication-error.ts": "15222159f5f7bd5e98a8f0038c8436fa5ed239e67c626932d359926f100973e2",
+    "src/integrations/plutofish/publication-error.ts": "8d6ede66983a5df481c912f4c93b4fc9c5e64db2c86eaa8fa74035b3f7d3c648",
     "src/integrations/plutofish/publication-file-types.ts": "ed30c1a4e8dc068a17c0fbf69d82fb627f81d3c8a73a8fe1b522e40b99ce1e24",
     "src/integrations/plutofish/publication-file.ts": "5837f5e37f1b4150e7caa8f96f05b8a009691acc443c78dccb1c765924659296",
     "src/integrations/plutofish/publication-proofs.ts": "1c6de5607fc0915d6185cc3bdd956be3cfad023cb47766efc8b6ecaab2c81fcd",

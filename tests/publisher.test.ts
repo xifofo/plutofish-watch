@@ -676,6 +676,53 @@ test.each(['分片', '凭据连接'])('%s 断网后自动续传原 uploadId，�
   expect(f.calls.filter(c => c.path === 'files/report')).toHaveLength(1)
 })
 
+test('暂停发生在远端接收分片后，重启继续核对丢失回执，原任务完成且不重复上传', async () => {
+  let accepted = false, init = 0, merges = 0
+  const parts = new Map<number, { PartNumber: number; ETag: string; Size: string }>(), puts: number[] = []
+  const retry: NonNullable<Parameters<typeof setup>[0]>['retry'] = { factory: (_dispatch, _token, signal) => ({ close() {}, client: {
+    async initMultipartUpload() { init++; return { uploadId: 'PAUSED-UPLOAD' } as any },
+    async listParts() { return { uploadId: 'PAUSED-UPLOAD', bucket: 'bucket', name: 'object', parts: [...parts.values()], isTruncated: false } as any },
+    async uploadPart(_name, id, number, buffer) {
+      expect(id).toBe('PAUSED-UPLOAD'); puts.push(number)
+      if (parts.has(number)) throw Object.assign(new Error('already accepted'), { code: 'PartAlreadyExist', status: 409 })
+      const etag = createHash('md5').update(buffer).digest('hex')
+      parts.set(number, { PartNumber: number, ETag: etag, Size: String(buffer.length) })
+      if (number === 2) {
+        accepted = true
+        await new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+      }
+      return { etag } as any
+    },
+    async completeMultipartUpload() { merges++; return { data: { state: true } } as any },
+  } }) }
+  const f = await setup({ retry, reply: (path, body) => {
+    if (path !== 'uploads/prepare') return undefined
+    if (body.action === 'start') return { body: { dispatch: { status: 'uploading', bucket: 'bucket', object: 'object', pickCode: 'original', callback: '{}' } } }
+    if (body.action === 'credentials') return { body: { credentials: { accessKeyId: 'fake', accessKeySecret: 'fake', securityToken: 'fake', expiration: new Date(Date.now() + 3600000).toISOString(), rate: 0 } } }
+    return undefined
+  } })
+  await appendFile(f.file, Buffer.alloc(16 * 1024 * 1024))
+  f.job.signature = await safeFile(f.root.path, f.file)
+  await until(f.publisher, () => accepted)
+  await f.publisher.pause()
+  expect(f.job.status).toBe('paused')
+  const key = f.job.fileKey!, release = structuredClone(f.job.release)
+  const statePath = join(f.temp, 'publications', key.replace(':', '-') + '.state.json')
+  expect(JSON.parse(await readFile(statePath, 'utf8')).checkpoint.parts.map((p: any) => p.number)).toEqual([1])
+  await f.publisher.close()
+  const store = new WatchStore(f.store.path), job = store.data.jobs[0]
+  const publisher = new WatchPublisher(store, f.connection, f.temp, () => {}, e => { throw e }, retry)
+  disposers.push(() => publisher.close()); f.connection.validateFile = validateWatchedFile(store)
+  publisher.start(); publisher.resume()
+  await until(publisher, () => job.status === 'completed' && job.ed2kSaved === true && job.synced === true)
+  expect(job.fileKey).toBe(key); expect(job.release).toEqual(release)
+  expect(store.data.jobs).toHaveLength(1)
+  expect(puts).toEqual([1, 2]); expect(init).toBe(1); expect(merges).toBe(1)
+  expect(job.error).toBe(''); expect(job.errorDetails).toBeUndefined()
+  expect(await safeFile(f.root.path, f.file)).toEqual(f.job.signature)
+  expect(f.calls.filter(c => c.path === 'files/report')).toHaveLength(1)
+})
+
 test('上传 502 详情落盘，重启后自动重建失效会话并沿用原文件和版本完成', async () => {
   let now = 100000, init = 0, unavailable = true, merged = 0, rejectFailures = true
   const options: NonNullable<Parameters<typeof setup>[0]>['retry'] = { now: () => now, baseMs: 100, factory: () => ({ close() {}, client: {

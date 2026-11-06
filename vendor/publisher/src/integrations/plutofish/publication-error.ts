@@ -8,7 +8,7 @@ const reasons: Record<string, string> = {
   UND_ERR_CONNECT_TIMEOUT: '连接超时', UND_ERR_HEADERS_TIMEOUT: '等待响应超时', UND_ERR_BODY_TIMEOUT: '读取响应超时', UND_ERR_SOCKET: '网络连接中断',
   ENOTFOUND: '无法解析服务地址', EAI_AGAIN: '域名解析暂时失败', ENETUNREACH: '网络不可达', EHOSTUNREACH: '服务器不可达', ENETDOWN: '网络已断开',
   NoSuchUpload: '原分片上传会话已失效', InvalidPart: '远端分片缺失或校验不一致', InvalidPartOrder: '合并分片顺序不正确',
-  InvalidDigest: '分片摘要无效', BadDigest: '分片摘要与远端不一致',
+  InvalidDigest: '分片摘要无效', BadDigest: '分片摘要与远端不一致', PartAlreadyExist: '分片已存在，尚未核验一致，请重试原任务',
   AccessDenied: '存储服务拒绝访问，请检查账号权限', SecurityTokenExpired: '上传临时凭据已过期', ExpiredToken: '上传临时凭据已过期',
   InvalidAccessKeyId: '上传临时凭据无效', InvalidSecurityToken: '上传临时凭据无效', SignatureDoesNotMatch: '上传签名校验未通过',
   SlowDown: '存储服务繁忙或限流', ServiceUnavailable: '存储服务暂不可用', InternalError: '存储服务内部错误',
@@ -51,7 +51,7 @@ export function ossFailure(error: unknown, stage: string, partNumber?: number): 
   const diagnostic = failureDetails(error, stage, partNumber)
   if (error instanceof PublisherError) { error.diagnostic ??= diagnostic; return error }
   const reason = reasons[diagnostic.code ?? ''] ?? ({ 502: '存储网关返回异常', 503: '存储服务暂不可用', 504: '存储网关响应超时', 403: '存储服务拒绝访问' } as Record<number, string>)[diagnostic.httpStatus ?? 0] ?? '存储请求失败，请查看错误码和请求编号'
-  const retryable = retryableError(error) || ['NoSuchUpload', 'InvalidPart', 'InvalidPartOrder', 'SecurityTokenExpired', 'ExpiredToken', 'CallbackFailed'].includes(diagnostic.code ?? '')
+  const retryable = retryableError(error) || ['NoSuchUpload', 'InvalidPart', 'InvalidPartOrder', 'PartAlreadyExist', 'SecurityTokenExpired', 'ExpiredToken', 'CallbackFailed'].includes(diagnostic.code ?? '')
   return new PublisherError(`${stage}失败：${reason}`, retryable, undefined, diagnostic)
 }
 
