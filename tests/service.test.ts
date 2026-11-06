@@ -342,3 +342,23 @@ test('确有其他监控或一次性任务占用时，提示具体任务名和�
   await expect(service.add(input)).rejects.toThrow('原一次性批次')
   await expect(service.add(input)).rejects.toThrow(file)
 })
+
+test('一次性任务完成且不再等待清理后释放文件，可重新上传', async () => {
+  const { service, root, temp } = await setup()
+  const path = join(temp, 'finished'); await mkdir(path)
+  const file = join(path, 'Movie.2026.mkv'); await writeFile(file, 'finished fixture')
+  const input = { ...root, title: '已完成批次', mode: 'once' as const, path, selectedFiles: [file], cleanup: { enabled: true, minutes: 1440 } }
+  await service.add(input)
+  const first = service.store.data.watches.at(-1)!
+  // 到期前清理仍会删除文件，取消清理后旧任务才只是历史记录。
+  first.batch!.completedAt = Date.now(); first.batch!.deleteAt = Date.now() + 1440 * 60_000
+  await expect(service.add(input)).rejects.toThrow('已完成批次')
+  await service.cancelCleanup(first.id)
+  await service.add({ ...input, cleanup: undefined })
+  const second = service.store.data.watches.at(-1)!
+  expect(second.id).not.toBe(first.id)
+  expect(second.batch!.files).toEqual([file])
+  expect(service.store.data.jobs.filter(j => j.watchId === second.id).map(j => j.path)).toEqual([file])
+  // 新任务未完成时继续占用，不受旧任务释放影响。
+  await expect(service.add(input)).rejects.toThrow('重叠')
+})

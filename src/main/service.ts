@@ -6,7 +6,7 @@ import { safeStorage } from 'electron'
 import { releaseSource, sourceReviewReason } from '../../vendor/publisher/src/integrations/plutofish/release-specs'
 import { releaseChoices } from '../../vendor/publisher/src/integrations/plutofish/release-selection'
 import type { PublicationDraft } from '../../vendor/publisher/src/integrations/plutofish/publication-types'
-import type { Release, Snapshot, WatchInput, WatchAPI, OneTimeBatch } from '../shared/model'
+import type { Release, Snapshot, WatchInput, WatchRoot, WatchAPI, OneTimeBatch } from '../shared/model'
 import { validateRetention } from '../shared/retention'
 import { watchPaths } from '../shared/watch-paths'
 import { bindingFor, stableKey, validateInput, validateWork, validateSource } from './bindings'
@@ -176,7 +176,9 @@ export class WatchService {
     if (repaired) { this.store.save(); this.changed() }
     // 固定文件清单只占用本次文件；持续监控和整目录清理仍占用完整目录。
     const filesOnly = (root: WatchInput) => root.mode === 'once' && (root.selectedFiles !== undefined || !root.cleanup?.enabled)
-    const existing = this.store.data.watches.filter(w => w.id !== excludingId && !w.batch?.deletedAt)
+    // 上传完成且不再等待清理的一次性任务只是历史记录，不再扫描或删除文件，因此不占用本地路径。
+    const finished = (root: WatchRoot) => root.batch?.deletedAt || (root.batch?.completedAt !== undefined && !root.cleanup?.enabled)
+    const existing = this.store.data.watches.filter(w => w.id !== excludingId && !finished(w))
     for (const root of existing) {
       const paths = filesOnly(root) ? root.batch!.files.filter(path => !root.batch!.releasedFiles?.includes(path)) : watchPaths(root)
       const occupied = paths.find(path => filesOnly(input)
