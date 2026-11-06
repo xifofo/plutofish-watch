@@ -43,11 +43,22 @@ export async function createOneTimeBatch(path: string, cleanup: LocalRetentionSe
 }
 
 /** 取消后允许另建任务；旧批次不再扫描该路径，也不能按旧计划删除本地文件。 */
-export function releaseOneTimeFile(root: WatchRoot, path: string): void {
-  if (root.mode !== 'once' || !root.batch?.files.includes(path)) return
+export function releaseOneTimeFile(root: WatchRoot, path: string): boolean {
+  if (root.mode !== 'once' || !root.batch?.files.includes(path)) return false
+  const changed = !root.batch.releasedFiles?.includes(path) || !!root.cleanup?.enabled || root.batch.deleteAt !== undefined
   root.batch.releasedFiles = [...new Set([...(root.batch.releasedFiles ?? []), path])]
   root.cleanup = { ...root.cleanup!, enabled: false }
   delete root.batch.deleteAt
+  return changed
+}
+
+/** 各取消入口和旧数据均以最后一条文件任务为准，重新添加时也及时修复占用。 */
+export function releaseCancelledOneTimeFiles(root: WatchRoot, jobs: WatchJob[]): boolean {
+  if (root.mode !== 'once') return false
+  let changed = false
+  const latest = new Map(jobs.filter(job => job.watchId === root.id).map(job => [job.path, job]))
+  for (const job of latest.values()) if (job.status === 'cancelled') changed = releaseOneTimeFile(root, job.path) || changed
+  return changed
 }
 
 /** 损坏的批次记录必须停止启动，不能退化为持续监控或扩大删除范围。 */

@@ -167,9 +167,38 @@ async function until(fn, label = '状态', timeout = 25000) {
   assert.equal(fs.existsSync(selectedFiles[2]), true); assert.equal(fs.existsSync(second), true)
   assert.equal(fs.existsSync(path.join(second, 'Stars.S01E01.NF.WEB-DL.mp4')), true)
   await screenshot('once-files-completed-narrow-dark')
+
+  // 文件队列取消后，批次必须显示已取消，并可从同一文件选择入口直接另建任务。
+  if (!(await snapshot()).uploadsPaused) await js('window.plutoWatch.pauseAll()')
+  const cancelledDir = path.join(temp, 'Cancelled'); fs.mkdirSync(cancelledDir)
+  const cancelledFile = path.join(cancelledDir, 'Stars.S01E01.NF.WEB-DL.mp4')
+  fs.copyFileSync(selectedFiles[2], cancelledFile)
+  await js(`window.plutoWatch.add(${JSON.stringify({ ...root, mode: 'once', title: '取消后重新上传', path: cancelledDir,
+    selectedFiles: [cancelledFile], cleanup: { enabled: false, minutes: 1440 } })})`)
+  await click('传输任务')
+  await until(() => js("[...document.querySelectorAll('.task')].some(row => row.textContent.includes('Stars.S01E01.NF.WEB-DL.mp4') && [...row.querySelectorAll('button')].some(b => b.textContent.trim() === '取消'))"), '取消入口')
+  const cancelledJob = (await snapshot()).jobs.find(job => job.path === cancelledFile)
+  await js("[...document.querySelectorAll('.task')].find(row => [...row.querySelectorAll('button')].some(b => b.textContent.trim() === '取消')).querySelector('.task-actions button.muted').click()")
+  await until(async () => (await snapshot()).jobs.find(job => job.id === cancelledJob.id).status === 'cancelled', '文件取消')
+  await click('一次性上传')
+  await until(() => js("[...document.querySelectorAll('.watch-row')].some(row => row.textContent.includes('取消后重新上传') && row.querySelector('.badge')?.textContent === '已取消')"), '批次取消状态')
+  assert.ok(await js("[...document.querySelectorAll('.watch-row')].find(row => row.textContent.includes('取消后重新上传')).textContent.includes('1 个已取消')"))
+  await screenshot('once-cancelled-narrow-dark')
+  selected = [cancelledFile]
+  await click('新建一次性上传'); await click('选择文件')
+  await until(() => js("!!document.querySelector('.selected-work')"), '取消文件重新识别')
+  await fill('select[aria-label="版本归类"]', 'fixed'); await click('查询版本')
+  await click('开始一次性上传')
+  await until(async () => {
+    const state = await snapshot()
+    return state.watches.length === 5 && state.jobs.filter(job => job.path === cancelledFile).length === 2
+  }, '取消文件重新添加')
+  assert.deepEqual((await snapshot()).jobs.filter(job => job.path === cancelledFile).map(job => job.status), ['cancelled', 'waiting'])
+  assert.equal(await js("document.body.innerText.includes('所选文件或目录与现有任务重叠')"), false)
+  await screenshot('once-cancelled-readded-narrow-dark')
   assert.deepEqual(errors, [])
   console.log(JSON.stringify({ ok: true, recognized: true, defaultOneDay: true, optionalDeletion: true, entireFolderDeleted: true,
-    pauseRespected: true, globalPolicyIsolated: true, cancelCleanup: true, fixedFileList: true, selectedFilesOnly: true, multiSelect: true, cancelPicker: true, removeSelection: true, selectedFileCleanup: true, notifiedServer: true, lightAndNarrowDark: true }))
+    pauseRespected: true, globalPolicyIsolated: true, cancelCleanup: true, fixedFileList: true, selectedFilesOnly: true, multiSelect: true, cancelPicker: true, removeSelection: true, selectedFileCleanup: true, cancelledBatchStatus: true, cancelledFileReadded: true, notifiedServer: true, lightAndNarrowDark: true }))
   Date.now = originalNow; app.quit()
 })().catch(async error => { failed = true; Date.now = originalNow; console.error(error); const win = BrowserWindow.getAllWindows()[0]; if (win) { console.error(await win.webContents.executeJavaScript('document.body.innerText')); fs.mkdirSync(path.resolve('.smoke'), { recursive: true }); fs.writeFileSync(path.resolve('.smoke/once-error.png'), (await win.webContents.capturePage()).toPNG()) }; app.quit() })
 app.on('will-quit', () => { server?.closeAllConnections(); server?.close(); if (temp) fs.rmSync(temp, { recursive: true, force: true }) })

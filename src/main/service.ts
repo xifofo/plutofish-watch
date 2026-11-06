@@ -20,7 +20,7 @@ import { searchWorks } from './work-search'
 import { recognitionSample, recognizeFile } from './recognition'
 import { applyWatchEdit } from './watch-edit'
 import { watchVersionChoices } from './versions'
-import { createOneTimeBatch, releaseOneTimeFile } from './one-time'
+import { createOneTimeBatch, releaseCancelledOneTimeFiles, releaseOneTimeFile } from './one-time'
 import type { RetentionOptions } from '../../vendor/publisher/src/integrations/plutofish/publication-retention'
 
 /** 首次扫描忽略的历史文件按 PlutoFish 进度核对的间隔 */
@@ -171,16 +171,21 @@ export class WatchService {
   }
 
   private checkLocalOverlap(input: WatchInput, batch?: OneTimeBatch, excludingId?: string): void {
+    let repaired = false
+    for (const root of this.store.data.watches) repaired = releaseCancelledOneTimeFiles(root, this.store.data.jobs) || repaired
+    if (repaired) { this.store.save(); this.changed() }
     // 固定文件清单只占用本次文件；持续监控和整目录清理仍占用完整目录。
     const filesOnly = (root: WatchInput) => root.mode === 'once' && (root.selectedFiles !== undefined || !root.cleanup?.enabled)
     const existing = this.store.data.watches.filter(w => w.id !== excludingId && !w.batch?.deletedAt)
-    const directories = existing.filter(w => !filesOnly(w)).flatMap(watchPaths)
-    const files = new Set(existing.filter(filesOnly).flatMap(w => w.batch!.files.filter(path => !w.batch!.releasedFiles?.includes(path))))
-    const overlap = filesOnly(input)
-      ? batch!.files.some(path => files.has(path) || directories.some(directory => within(directory, path)))
-      : watchPaths(input).some(path => directories.some(other => within(other, path) || within(path, other)) || [...files].some(file => within(path, file)))
-    if (overlap) {
-      throw new Error(input.mode === 'once' ? '所选文件或目录与现有任务重叠，请选择其他文件或先移除原任务' : '监控目录不能重复或互相嵌套')
+    for (const root of existing) {
+      const paths = filesOnly(root) ? root.batch!.files.filter(path => !root.batch!.releasedFiles?.includes(path)) : watchPaths(root)
+      const occupied = paths.find(path => filesOnly(input)
+        ? batch!.files.some(file => filesOnly(root) ? file === path : within(path, file))
+        : watchPaths(input).some(directory => filesOnly(root) ? within(directory, path) : within(path, directory) || within(directory, path)))
+      if (occupied) {
+        const reason = input.mode === 'once' ? '所选文件或目录与现有任务重叠' : '监控目录不能重复或互相嵌套'
+        throw new Error(`${reason}：${root.mode === 'once' ? '一次性上传' : '监控目录'}「${root.title}」仍占用 ${occupied}。请检查该任务，或先移除该任务后重试。`)
+      }
     }
   }
 

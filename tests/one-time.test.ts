@@ -8,8 +8,9 @@ import { WatchStore } from '../src/main/store'
 import { createOneTimeBatch, OneTimeBatches, releaseOneTimeFile } from '../src/main/one-time'
 import { DirectoryWatcher } from '../src/main/watcher'
 import { defaultOneTimeRetention } from '../src/shared/retention'
+import { oneTimeProgress } from '../src/shared/one-time-progress'
 import { useLocalFile } from '../vendor/publisher/src/lib/local-file-use'
-import type { WatchRoot } from '../src/shared/model'
+import type { WatchJob, WatchRoot } from '../src/shared/model'
 const DAY = 24 * 3600_000
 const disposers: Array<() => Promise<unknown>> = []
 afterEach(async () => { for (const dispose of disposers.splice(0).reverse()) await dispose() })
@@ -68,6 +69,20 @@ test.each([true, false])('已释放路径的旧批次收到迟到成功也不再
   expect(f.root.batch!.deletedAt).toBeUndefined()
   expect(existsSync(f.file)).toBe(true)
   expect(existsSync(f.sidecar)).toBe(true)
+})
+
+test('批次全部取消与部分取消按文件终态统计，旧失败诊断不使批次继续处理中', async () => {
+  const f = await fixture(false), job = f.store.data.jobs[0]
+  job.status = 'cancelled'; job.error = '上传第 625 片失败'
+  expect(oneTimeProgress(f.root, f.store.data.jobs)).toEqual({ processed: 0, cancelled: 1, total: 1, allCancelled: true, settled: true })
+  releaseOneTimeFile(f.root, f.file)
+  job.status = 'completed' // 已发出的请求迟到成功，保留批次的取消决定。
+  expect(oneTimeProgress(f.root, f.store.data.jobs).allCancelled).toBe(true)
+  const second: WatchJob = { ...job, id: 'second', path: join(f.root.path, 'Second.mp4'), status: 'uploading' }
+  f.root.batch!.files.push(second.path); f.store.data.jobs.push(second)
+  expect(oneTimeProgress(f.root, f.store.data.jobs)).toMatchObject({ cancelled: 1, processed: 0, settled: false })
+  second.status = 'completed'
+  expect(oneTimeProgress(f.root, f.store.data.jobs)).toMatchObject({ cancelled: 1, processed: 1, settled: true, allCancelled: false })
 })
 
 test('所有上传、状态和 ED2K 同步完成才计时，三天未到不删，到期删除目录和附属文件', async () => {

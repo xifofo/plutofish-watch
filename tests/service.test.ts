@@ -311,3 +311,34 @@ test('升级前已取消的一次性任务重启后释放占用，不复活旧�
   await restarted.add(input)
   expect(restarted.store.data.jobs.filter(job => job.path === file).map(job => job.status)).toEqual(['cancelled', 'waiting'])
 })
+
+test('当前进程的旧取消记录尚未释放路径时，重新添加先修复占用，无需重启或移除批次', async () => {
+  const { service, root, temp } = await setup()
+  const path = join(temp, 'stale-cancellation'); await mkdir(path)
+  const file = join(path, 'Show.S01E01.mp4'); await writeFile(file, 'original')
+  const input = { ...root, mode: 'once' as const, path, selectedFiles: [file], cleanup: { enabled: true, minutes: 1440 } }
+  await service.add(input)
+  const once = service.store.data.watches.at(-1)!
+  const old = service.store.data.jobs.find(job => job.watchId === once.id)!
+  // 文件取消状态已持久化，但批次没有释放标记，模拟旧版本或其他取消入口留下的记录。
+  old.status = 'cancelled'; old.manuallyPaused = true; old.fileKey = 'original-file-key'
+  old.error = '上传第 625 片失败'; old.errorDetails = { stage: '上传第 625 片', code: 'PartAlreadyExist', httpStatus: 409 }
+  service.store.save()
+  await service.add(input)
+  expect(once.batch!.releasedFiles).toEqual([file])
+  expect(once.cleanup!.enabled).toBe(false)
+  expect(service.store.data.jobs.filter(job => job.path === file).map(job => job.status)).toEqual(['cancelled', 'waiting'])
+  expect(old.errorDetails?.code).toBe('PartAlreadyExist')
+  expect(new WatchStore(service.store.path).data.watches.find(root => root.id === once.id)!.batch!.releasedFiles).toEqual([file])
+})
+
+test('确有其他监控或一次性任务占用时，提示具体任务名和路径', async () => {
+  const { service, root, job, temp } = await setup()
+  await expect(service.add({ ...root, mode: 'once', selectedFiles: [job.path] })).rejects.toThrow('原作品')
+  const path = join(temp, 'occupied'); await mkdir(path)
+  const file = join(path, 'Show.S01E01.mp4'); await writeFile(file, 'original')
+  const input = { ...root, mode: 'once' as const, title: '原一次性批次', path, selectedFiles: [file] }
+  await service.add(input)
+  await expect(service.add(input)).rejects.toThrow('原一次性批次')
+  await expect(service.add(input)).rejects.toThrow(file)
+})

@@ -2,6 +2,7 @@
 import type { WatchRoot, WatchJob } from '../../shared/model'
 import Icon from './Icon.vue'
 import { formatRetention } from '../../shared/retention'
+import { oneTimeProgress } from '../../shared/one-time-progress'
 defineProps<{ roots: WatchRoot[]; jobs: WatchJob[]; busy: boolean }>()
 const emit = defineEmits<{ toggle: [id: string]; remove: [id: string]; cancelCleanup: [id: string]; jobs: [] }>()
 function cleanupLabel(root: WatchRoot) {
@@ -12,8 +13,14 @@ function cleanupLabel(root: WatchRoot) {
   if (batch.deleteAt) return `预计 ${new Date(batch.deleteAt).toLocaleString('zh-CN')} 删除${target}${root.enabled ? '' : ' · 已暂停'}`
   return `全部上传并同步 ED2K 后 ${formatRetention(root.cleanup.minutes)}删除${target}`
 }
-function processed(root: WatchRoot, jobs: WatchJob[]) {
-  return root.batch!.files.filter(path => ['completed', 'duplicate'].includes(jobs.findLast(j => j.watchId === root.id && j.path === path)?.status ?? '')).length
+function state(root: WatchRoot, jobs: WatchJob[]) {
+  const progress = oneTimeProgress(root, jobs)
+  if (root.batch?.deletedAt) return { label: '已清理', badge: 'completed' }
+  if (progress.allCancelled) return { label: '已取消', badge: 'cancelled' }
+  if (progress.settled && progress.cancelled) return { label: '已结束', badge: 'completed' }
+  if (root.batch?.cleanupError) return { label: '清理已停止', badge: 'review' }
+  if (!root.enabled) return { label: '已暂停', badge: 'paused' }
+  return root.batch?.completedAt ? { label: '已完成', badge: 'completed' } : { label: '处理中', badge: 'processing' }
 }
 </script>
 <template>
@@ -26,12 +33,12 @@ function processed(root: WatchRoot, jobs: WatchJob[]) {
         <h3>{{ root.title }} <span v-if="root.work.mediaType === 'tv'">按文件识别季 · 默认第 {{ root.seasonNumber }} 季</span></h3>
         <div class="path" :title="root.selectedFiles?.join('、') || root.path">{{ root.selectedFiles?.join('、') || root.path }}</div>
         <div class="watch-tags"><span>{{ root.releaseName }}</span><span>{{ root.binding.sourceAccount.alias }} → {{ root.directoryPath || root.directoryId }}</span></div>
-        <small>{{ processed(root, jobs) }} / {{ root.batch?.files.length }} 个视频已处理 · {{ cleanupLabel(root) }}</small>
+        <small>{{ oneTimeProgress(root, jobs).processed }} / {{ root.batch?.files.length }} 个视频已处理<template v-if="oneTimeProgress(root, jobs).cancelled"> · {{ oneTimeProgress(root, jobs).cancelled }} 个已取消</template> · {{ cleanupLabel(root) }}</small>
         <p v-if="root.error && !root.batch?.completedAt" class="task-error">{{ root.error }}</p>
       </div>
       <div class="watch-actions">
-        <span class="badge" :class="root.batch?.cleanupError ? 'review' : !root.enabled ? 'paused' : root.batch?.completedAt ? 'completed' : 'processing'">{{ root.batch?.deletedAt ? '已清理' : root.batch?.cleanupError ? '清理已停止' : !root.enabled ? '已暂停' : root.batch?.completedAt ? '已完成' : '处理中' }}</span>
-        <div><button v-if="root.cleanup?.enabled && !root.batch?.deletedAt" class="link" :disabled="busy" @click="emit('cancelCleanup', root.id)">取消删除</button><button v-if="!root.batch?.deletedAt" class="link" :disabled="busy" @click="emit('toggle', root.id)">{{ root.enabled ? '暂停' : '恢复' }}</button><button class="link muted" :disabled="busy" @click="emit('remove', root.id)">移除</button></div>
+        <span class="badge" :class="state(root, jobs).badge">{{ state(root, jobs).label }}</span>
+        <div><button v-if="root.cleanup?.enabled && !root.batch?.deletedAt" class="link" :disabled="busy" @click="emit('cancelCleanup', root.id)">取消删除</button><button v-if="!root.batch?.deletedAt && !oneTimeProgress(root, jobs).allCancelled" class="link" :disabled="busy" @click="emit('toggle', root.id)">{{ root.enabled ? '暂停' : '恢复' }}</button><button class="link muted" :disabled="busy" @click="emit('remove', root.id)">移除</button></div>
       </div>
     </article>
   </section>
