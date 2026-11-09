@@ -2,7 +2,10 @@
 import { basename, extname } from 'node:path'
 import type { MediaSpecs } from '../../lib/actual-version'
 import { mediaFilenameTags, tierHeight } from '../../lib/name'
+import { audioCodecLabel, videoCodecLabel } from '../../lib/media-codec'
 import type { ReleaseOption } from './release-selection'
+
+const channelLabel = (count: number) => ({ 1: '1.0', 2: '2.0', 6: '5.1', 8: '7.1' } as Record<number, string>)[count] ?? `${count} 声道`
 
 import { audioCodec, dtsLabel, videoCodec, normalizeRange as range, parseReleaseSpecs as parse, releaseSource, sourceReviewReason, matchingReleases, type ReleaseSource } from './release-specs'
 
@@ -18,9 +21,18 @@ export function matchMeasuredRelease(items: ReleaseOption[], media: MediaSpecs, 
   const measuredAudio = media.audio.status === 'confirmed' ? audioCodec(media.audio.codec ?? '') : undefined
   const fps = Math.round(media.fps ?? 0)
   if (media.audio.status === 'confirmed' && (!measuredAudio || !media.audio.channels)) return { reason: '音轨规格无法确定，请选择版本' }
-  if (file && ((file.codec && file.codec !== codec) ||
-    (file.range && file.range !== dynamic && !(file.rangeTag === 'HDR' && dynamic === 'HLG')) || (file.audio && file.audio !== measuredAudio) ||
-    (file.channels && file.channels !== media.audio.channels) || (file.fps && file.fps !== fps))) return { reason: '文件名与实际媒体规格不符，请确认版本' }
+  // 逐项写明矛盾，上传者不必对照 MediaInfo 猜是哪一项。
+  const conflicts: string[] = []
+  const noAudio = media.audio.status === 'none' && !!(file?.audio || file?.channels)
+  if (file?.codec && file.codec !== codec) conflicts.push(`视频编码：文件名写 ${videoCodecLabel(file.codec)}，实测 ${videoCodecLabel(codec)}`)
+  if (file?.range && file.range !== dynamic && !(file.rangeTag === 'HDR' && dynamic === 'HLG')) conflicts.push(`动态范围：文件名写 ${file.rangeTag}，实测 ${dynamic}`)
+  if (noAudio && file) conflicts.push(`音轨：文件名写 ${[file.audio ? audioCodecLabel(file.audio) : '', file.channels ? channelLabel(file.channels) : ''].filter(Boolean).join(' ')}，实测没有音轨`)
+  else {
+    if (file?.audio && file.audio !== measuredAudio) conflicts.push(`音轨：文件名写 ${audioCodecLabel(file.audio)}，实测 ${audioCodecLabel(media.audio.codec)}`)
+    if (file?.channels && file.channels !== media.audio.channels) conflicts.push(`声道：文件名写 ${channelLabel(file.channels)}，实测 ${channelLabel(media.audio.channels!)}`)
+  }
+  if (file?.fps && file.fps !== fps) conflicts.push(`帧率：文件名写 ${file.fps}fps，实测 ${fps}fps`)
+  if (conflicts.length) return { reason: `文件名与实际媒体规格不符（${conflicts.join('；')}），${noAudio ? '请检查文件' : '请确认版本'}` }
   const reason = sourceReviewReason(releaseSource(stem, preset))
   if (reason) return { reason }
   const matches = matchingReleases(items, buildVersion(media, path, undefined, preset).name)
