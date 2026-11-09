@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import type { MediaSpecs } from './actual-version.ts'
-import { audioCodecLabel, videoCodecLabel } from './media-codec.ts'
+// 桌面端渲染进程也编译本文件，其 tsconfig 不允许值导入带 .ts 后缀。
+import { audioCodecLabel, videoCodecLabel } from './media-codec'
 
 export type MediaKind = 'show' | 'movie' | 'short'
 

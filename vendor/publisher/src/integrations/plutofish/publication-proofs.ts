@@ -88,7 +88,8 @@ export class PublicationProofs {
     signal.throwIfAborted()
     if (!this.connection.ready) return
     const view = this.connection.view(), source = view.identity?.sourceAccount
-    if (!source) return
+    // 未绑定源账号时与未连接一样退避；不排下一次领取会让 run() 以零延迟空转，饿死所有计时器。
+    if (!source) { this.nextPoll = Date.now() + 2000; return }
     const binding = { url: view.url, publisherId: view.identity!.id, sourceAccount: source }
     const bindingKey = JSON.stringify(binding)
     if (bindingKey !== this.bindingKey) {

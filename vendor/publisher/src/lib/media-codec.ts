@@ -45,7 +45,8 @@ const videoFamilies: Family[] = [
   // DVD、电视录制与早期压制常见的编码。
   { code: 'MPEG2', label: 'MPEG2', aliases: ['MPEG2', 'MPEG2VIDEO', 'H262'] },
   { code: 'MPEG1', label: 'MPEG1', aliases: ['MPEG1', 'MPEG1VIDEO'] },
-  { code: 'XVID', label: 'XviD', aliases: ['XVID', 'DIVX', 'MPEG4'] },
+  // MPEG-4 Part 2：沿用下载器一直写的 MPEG4，发布名里的 XviD / DivX 归到同一编码。
+  { code: 'MPEG4', label: 'MPEG4', aliases: ['MPEG4', 'XVID', 'DIVX'] },
   { code: 'VC1', label: 'VC1', aliases: ['VC1', 'WMV3', 'WVC1'] },
 ]
 
@@ -82,10 +83,10 @@ export const videoCodecCode = (value = ''): string | undefined => videoFamily(va
 export const videoCodecLabel = (value = ''): string | undefined => videoFamily(value)?.label
 
 /** 这些编码不承载 HDR；DVD 与电视录制常缺色彩标记，按 SDR 归类。 */
-export const sdrOnlyVideo = (value = '') => ['MPEG2', 'MPEG1', 'XVID', 'VC1', 'VP8'].includes(videoCodecCode(value) ?? '')
+export const sdrOnlyVideo = (value = '') => ['MPEG2', 'MPEG1', 'MPEG4', 'VC1', 'VP8'].includes(videoCodecCode(value) ?? '')
 
 /** 发布名中按音轨识别的写法（已统一大写、去掉横线），长的在前以免 DD 抢先匹配 DDP。 */
 export const releaseAudioTokens = ['AAC', 'AC3', 'AC4', 'EAC3', 'DDP', 'DD', 'DTS', 'TRUEHD', 'FLAC', 'ALAC', 'LPCM', 'PCM',
   'OPUS', 'VORBIS', 'MP1', 'MP2', 'MP3', 'WMA', 'AMR', 'APE', 'WAVPACK', 'TAK', 'TTA', 'DSD', 'MPEGH', 'SPEEX', 'ADPCM']
   .sort((a, b) => b.length - a.length)
-export const releaseVideoTokens = ['AVC', 'HEVC', 'AV1', 'VP9', 'VP8', 'VVC', 'MPEG2', 'MPEG1', 'XVID', 'DIVX', 'VC1']
+export const releaseVideoTokens = ['AVC', 'HEVC', 'AV1', 'VP9', 'VP8', 'VVC', 'MPEG2', 'MPEG1', 'MPEG4', 'XVID', 'DIVX', 'VC1']
