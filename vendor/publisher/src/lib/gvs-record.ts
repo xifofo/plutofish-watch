@@ -4,6 +4,7 @@ import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } fr
 import { homedir } from 'node:os'
 import { dirname, extname, join } from 'node:path'
 import type { ActualVersion, CompletedMedia, GVSActualRecord, MediaSpecs } from './actual-version.ts'
+import { sdrOnlyVideo } from './media-codec.ts'
 import { readMp4Tracks, type Mp4Track } from './mp4box.ts'
 import { lookHostFFmpeg, lookMP4Box, tuiBinDir } from './tools.ts'
 
@@ -71,7 +72,8 @@ function defaultAudio(streams: Array<Record<string, any>>, options: ProbeAudioOp
   const audio = tracks[index]!
   const mp4 = options.mp4AudioTracks?.find(t => t.type === 'soun' && t.id === Number(audio.id))
   const tag = mp4?.codec || audio.codec_tag_string
-  const codec = /^dts[xy]$/.test(tag || '') ? 'dtsx'
+  // MKV 里的 DTS:X 编码名仍是 dts，只有 profile（DTS-HD MA + DTS:X）能看出来。
+  const codec = /^dts[xy]$/.test(tag || '') || (audio.codec_name === 'dts' && /DTS:X/i.test(String(audio.profile || ''))) ? 'dtsx'
     : typeof audio.codec_name === 'string' && audio.codec_name !== 'unknown' ? audio.codec_name : undefined
   const channels = positive(audio.channels) || positive(mp4?.channels)
   return { status: 'confirmed', index, evidence, ...(positive(audio.id) ? { trackId: Number(audio.id) } : {}),
@@ -94,7 +96,9 @@ export function mediaSpecsFromProbe(payload: string, options: ProbeAudioOptions 
     if (v.side_data_list?.some((s: Record<string, unknown>) => /dovi|dolby vision/i.test(String(s.side_data_type)))) result.dynamicRange = 'DV'
     else if (v.color_transfer === 'smpte2084') result.dynamicRange = 'HDR'
     else if (v.color_transfer === 'arib-std-b67') result.dynamicRange = 'HLG'
-    else if (['bt709', 'smpte170m', 'smpte240m', 'bt2020-10', 'bt2020-12', 'iec61966-2-1'].includes(v.color_transfer)) result.dynamicRange = 'SDR'
+    else if (['bt709', 'smpte170m', 'smpte240m', 'bt470m', 'bt470bg', 'bt1361e', 'iec61966-2-4', 'bt2020-10', 'bt2020-12', 'iec61966-2-1'].includes(v.color_transfer)) result.dynamicRange = 'SDR'
+    // MPEG-2 / XviD / VC-1 等不承载 HDR；DVD 与电视录制常缺色彩标记。
+    else if ((!v.color_transfer || v.color_transfer === 'unknown') && sdrOnlyVideo(String(v.codec_name || ''))) result.dynamicRange = 'SDR'
     result.audio = defaultAudio(data.streams, options)
     return result
   } catch { return { status: 'unavailable' } }

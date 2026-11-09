@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import type { MediaSpecs } from './actual-version.ts'
+import { audioCodecLabel, videoCodecLabel } from './media-codec.ts'
 
 export type MediaKind = 'show' | 'movie' | 'short'
 
@@ -133,6 +134,9 @@ export function tierHeight(width: number, height: number): number {
   if (w >= 1700) return 1080
   if (w >= 1100) return 720
   if (w >= 750) return 480
+  // DVD 的 720×480 / 720×576 是非方形像素，按长边会误判成 360p。
+  const short = rawWidth > 0 && h > 0 ? Math.min(rawWidth, h) : 0
+  if (w >= 700 && short >= 470) return short >= 560 ? 576 : 480
   if (w >= 550) return 360
   if (h >= 1600) return 2160
   if (h >= 1300) return 1440
@@ -216,12 +220,12 @@ export function mediaFilenameTags(media: MediaSpecs, options: { preview?: boolea
   const fps = Math.round(media.fps || 0)
   if (fps >= 48) parts.push(`${fps}fps`)
   const codec = (media.codec || '').toLowerCase()
-  const videoCodec = ({ h264: 'AVC', h265: 'HEVC', hevc: 'HEVC', av1: 'AV1', vp9: 'VP9' } as Record<string, string>)[codec]
-    || (codec && codec !== 'unknown' ? codec.toUpperCase() : '')
+  const videoCodec = videoCodecLabel(codec) || (codec && codec !== 'unknown' ? codec.toUpperCase() : '')
   if (videoCodec && !options.template) parts.push(videoCodec)
   if (media.audio?.codec && (options.preview || (media.audio.status === 'confirmed' && media.audio.channels))) {
     const a = media.audio
-    const audioCodec = ({ aac: 'AAC', ac3: 'AC3', eac3: 'DDP', dts: 'DTS', dca: 'DTS', dtsx: 'DTS.X', truehd: 'TrueHD', mlp: 'TrueHD', flac: 'FLAC' } as Record<string, string>)[a.codec!.toLowerCase()] || a.codec!.toUpperCase()
+    // 各种 PCM 统一写 LPCM，表外编码按编码名大写保留，不把 pcm_s24le 之类的内部名写进文件名。
+    const audioCodec = audioCodecLabel(a.codec) || a.codec!.toUpperCase()
     // A 10-channel DTS:X count does not establish a 10.0 speaker layout.
     const channels = a.channels ? ({ 1: '1.0', 2: '2.0', 6: '5.1', 8: '7.1' } as Record<number, string>)[a.channels]
       || (a.codec === 'dtsx' ? `${a.channels}ch` : `${a.channels}.0`) : ''

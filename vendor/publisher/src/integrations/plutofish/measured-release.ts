@@ -4,7 +4,7 @@ import type { MediaSpecs } from '../../lib/actual-version'
 import { mediaFilenameTags, tierHeight } from '../../lib/name'
 import type { ReleaseOption } from './release-selection'
 
-import { audioCodec, videoCodec, normalizeRange as range, parseReleaseSpecs as parse, releaseSource, sourceReviewReason, matchingReleases, type ReleaseSource } from './release-specs'
+import { audioCodec, dtsLabel, videoCodec, normalizeRange as range, parseReleaseSpecs as parse, releaseSource, sourceReviewReason, matchingReleases, type ReleaseSource } from './release-specs'
 
 /** 不凭一个相似文件名或单个候选推断版本；未知音轨、缺失来源和重名版本需要人工选择。 */
 export function matchMeasuredRelease(items: ReleaseOption[], media: MediaSpecs, path: string, preset: ReleaseSource = {}): { matchedId?: string; canCreate?: boolean; reason: string } {
@@ -38,9 +38,12 @@ export function measuredReleaseVersion(media: MediaSpecs, path: string, season?:
 function buildVersion(media: MediaSpecs, path: string, season?: number, preset: ReleaseSource = {}) {
   const file = parse(basename(path, extname(path)), tierHeight(media.width ?? 0, media.height ?? 0))
   const source = releaseSource(basename(path, extname(path)), preset)
-  const resolution = `${file?.height ?? tierHeight(media.width ?? 0, media.height ?? 0)}p`
+  // 隔行扫描（480i、1080i）只能从文件名得知，按原写法保留。
+  const resolution = `${file?.height ?? tierHeight(media.width ?? 0, media.height ?? 0)}${file?.scan ?? 'p'}`
   const dynamicRange = range(media.dynamicRange!)!
-  const tags = mediaFilenameTags(media)
+  // 实测只知道 DTS，文件名写明的 DTS-HD MA 等子格式保留在音轨标签里；实测为 DTS:X 时以实测为准。
+  const variant = file?.audio === 'DTS' && media.audio?.codec?.toLowerCase() !== 'dtsx' ? file.audioVariant : undefined
+  const tags = mediaFilenameTags(media).map(tag => variant && /^DTS(?=\.|$)/.test(tag) ? dtsLabel(variant) + tag.slice(3) : tag)
   const fps = Math.round(media.fps!)
   if (fps < 48 && file?.fps) tags.splice(1, 0, `${fps}fps`)
   const parts = [
