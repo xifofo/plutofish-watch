@@ -176,6 +176,9 @@ export class PlutoFishConnection {
         throw new Error('作品搜索失败，请稍后重试')
       }
       if (path === 'uploads/prepare') {
+        if (response.status === 503 && failure?.error?.code === 'CLOUD_WAITING_WORKER') {
+          throw new PublisherError('等待执行节点恢复，将自动继续原上传任务', true, retryAfter(response), diagnostic)
+        }
         if (failure?.error?.code === 'CLOUD_ACCESS_LIMIT') throw Object.assign(new UploadRateLimitError(), { diagnostic })
         // 使用本地固定提示，不把供应商正文或凭据送到渲染进程。
         const providerCode = response.headers.get('x-plutofish-provider-code') ?? ''

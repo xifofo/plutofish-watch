@@ -1,5 +1,5 @@
 /** 持久化任务快照 Outbox；两路上传与单路预处理独立运行，退出不丢分片。 */
-import { PublisherError, type FailureDetails } from './retry'
+import { PublisherError, retryDelay, type FailureDetails } from './retry'
 import { publicationFailure } from './publication-error'
 import { UploadPauses, UploadRateLimitError, uploadRateLimited } from './upload-pause'
 import { basename } from 'node:path'
@@ -52,6 +52,7 @@ export class PublicationWorker {
   private closed = false
   private readonly syncAbort = new AbortController()
   private readonly retryAt = new Map<string, number>()
+  private readonly workerWaitAttempts = new Map<string, number>()
   private readonly syncRetryAt = new Map<string, number>()
   private readonly failureRetryAt = new Map<string, number>()
   private readonly syncErrors = new Map<string, PublisherError>()
@@ -61,6 +62,7 @@ export class PublicationWorker {
     this.store = new PublicationStore(options.directory ?? publicationDirectory())
     this.uploadPauses = new UploadPauses(this.store.directory, options.now)
     this.factory = options.factory
+    this.now = options.now ?? Date.now
     this.autoUpload = options.autoUpload ?? (() => true)
     this.probeMedia = options.probeMedia ?? probeFinishedMedia
     this.cleanup = new PublicationCleanup(connection, state => {
@@ -68,6 +70,7 @@ export class PublicationWorker {
       this.store.removeCompleted(state)
       this.states.delete(state.draft.fileKey)
       this.retryAt.delete(state.draft.fileKey)
+      this.workerWaitAttempts.delete(state.draft.fileKey)
       this.syncRetryAt.delete(state.draft.fileKey)
       this.failureRetryAt.delete(state.draft.fileKey)
       this.syncErrors.delete(state.draft.fileKey)
@@ -77,6 +80,7 @@ export class PublicationWorker {
     if (!options.manual) { this.timer = setInterval(() => { void this.tick() }, 2000); this.timer.unref?.() }
   }
   private readonly factory?: OSSFactory
+  private readonly now: () => number
   private readonly autoUpload: () => boolean
   private readonly probeMedia: typeof probeFinishedMedia
 
@@ -246,6 +250,7 @@ export class PublicationWorker {
     if (this.preparing?.key === key) this.preparing.abort.abort()
     this.prepared.delete(key)
     this.transfers.delete(key)
+    this.workerWaitAttempts.delete(key)
     if (action === 'pause' || action === 'cancel') this.update(state, { stage: action === 'pause' ? 'paused' : 'cancelled', errorMessage: '' })
     else {
       this.retryAt.delete(key)
@@ -330,7 +335,7 @@ export class PublicationWorker {
       try { await this.cleanup.tick(this.states, this.syncAbort.signal) } catch { /* 清理失败保留原记录，下轮或重启后继续 */ }
       if (!this.closed) {
         // 首次登记是服务端上传授权的前提；之后的临时进度同步故障不阻塞准备、上传或续传。
-        const eligible = [...this.states.values()].filter(s => this.uploadAllowed(s) && !this.uploadPauses.paused(s.draft.binding) && ['processing', 'uploading'].includes(s.snapshot.stage) && s.draft.output && !this.running.has(s.draft.fileKey) && s.acknowledged > 0 && this.syncErrors.get(s.draft.fileKey)?.retryable !== false && (this.retryAt.get(s.draft.fileKey) ?? 0) <= Date.now())
+        const eligible = [...this.states.values()].filter(s => this.uploadAllowed(s) && !this.uploadPauses.paused(s.draft.binding) && ['processing', 'uploading'].includes(s.snapshot.stage) && s.draft.output && !this.running.has(s.draft.fileKey) && s.acknowledged > 0 && this.syncErrors.get(s.draft.fileKey)?.retryable !== false && (this.retryAt.get(s.draft.fileKey) ?? 0) <= this.now())
         for (const state of eligible.filter(s => this.prepared.has(s.draft.fileKey))) {
           const grouped = this.connection.groupedUploads
           // 后台重验可能发现部署或回滚：原上传所有请求保持同一租约协议，排空后再切换。
@@ -416,7 +421,7 @@ export class PublicationWorker {
       state.checkpoint.file = file
       this.store.save(state)
       const cp = state.checkpoint
-      this.update(state, { attempt: state.snapshot.attempt + 1, stage: 'uploading', downloadPercent: 100, sizeBytes: file.size, errorMessage: '' })
+      this.update(state, { attempt: state.snapshot.attempt + (this.workerWaitAttempts.has(draft.fileKey) ? 0 : 1), stage: 'uploading', downloadPercent: 100, sizeBytes: file.size, errorMessage: '' })
       this.phase(state, 'uploading')
       const rememberReady = (dispatch: UploadReply['dispatch']) => {
         if (dispatch.status !== 'ready') throw new PublisherError('115 文件仍待确认完成', true)
@@ -480,12 +485,20 @@ export class PublicationWorker {
         provider: '115', sourceAccount: draft.binding.sourceAccount!.alias, resource: cp.resource, attempt: 1, sequence: 1,
       }, signal)
       state.completedAt ??= Date.now()
+      this.workerWaitAttempts.delete(draft.fileKey)
       this.update(state, { stage: 'completed', uploadedBytes: file.size, uploadPercent: 100, errorMessage: '' })
     } catch (error) {
       if (uploadRateLimited(error) || uploadRateLimited(signal.reason)) {
         this.pauseAccount(draft.binding, publicationFailure(uploadRateLimited(error) ? error : signal.reason, '上传文件').diagnostic)
+      } else if (!signal.aborted && error instanceof PublisherError && error.diagnostic?.code === 'CLOUD_WAITING_WORKER' && error.diagnostic.httpStatus === 503) {
+        // 只重试服务端明确尚未执行的等待；结果未知不进入此分支。保留 taskKey、attempt 和上传断点，
+        // 由原上传循环退避续办，避免失败上报触发外层重建任务，也不会占用上传并发等待节点。
+        const attempt = (this.workerWaitAttempts.get(draft.fileKey) ?? 0) + 1
+        this.workerWaitAttempts.set(draft.fileKey, attempt)
+        this.retryAt.set(draft.fileKey, this.now() + Math.max(retryDelay(attempt, 5000, 60_000), error.retryAfterMs ?? 0))
+        this.update(state, { stage: 'processing', errorMessage: error.message })
       } else if (!signal.aborted && error instanceof Error && error.message === 'PlutoFish 网盘上传排队中') {
-        this.retryAt.set(draft.fileKey, Date.now() + 15_000)
+        this.retryAt.set(draft.fileKey, this.now() + 15_000)
         this.update(state, { stage: 'processing', errorMessage: error.message })
       } else if (!signal.aborted || heartbeatError) {
         const stage = ({ hashing: '校验本地文件', uploading: '上传文件', verifying: '核验网盘文件', reporting: '登记资源' } as Record<string, string>)[state.draft.progress?.phase ?? ''] ?? '上传文件'
