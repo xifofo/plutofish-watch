@@ -178,13 +178,14 @@ Windows 包面向 Intel/AMD 64 位系统（x64）；当前 Electron 运行时不
 
 ## 数据与服务契约
 
-运行数据存储在 Electron 的独立 `userData` 目录：macOS 默认 `~/Library/Application Support/PlutoFish Watch/`。包含：
+运行数据存储在 Electron 的独立 `userData` 目录：Windows 默认 `%APPDATA%\PlutoFish Watch\`，macOS 默认 `~/Library/Application Support/PlutoFish Watch/`。包含：
 
 - `watch-state.json`：目录绑定、扫描基线、文件任务、暂停状态、本地文件保留策略与一次性批次清单及删除进度。
+- `watch-state.json.bak`：上一份有效监控记录。写入时先同步落盘再替换文件；主记录损坏时保留损坏原件，并从有效备份恢复。恢复后目录监控、上传和自动清理均关闭，需要核对后手动恢复。
 - `connection.json`：服务地址与系统密钥环加密的发布端凭据。Linux 无可用密钥环时拒绝明文保存。
 - `publications/`：独立的上传检查点、进度快照、ED2K 与片段校验清单。
 
-这些文件不进入 Git。数据解析或落盘失败时停止处理，不以空队列覆盖损坏记录。`--watch-data=/绝对路径` 可为本地验收指定隔离数据目录。
+这些文件不进入 Git。没有有效备份时，数据解析失败仍停止处理，不以空队列覆盖损坏记录；落盘失败也会停止处理。备份不能代替外部备份，升级或维修前应复制整个数据目录（包括 `publications/`）。`--watch-data=/绝对路径` 可为本地验收指定隔离数据目录。
 
 同一个发布 Key 可同时用于 GVS 和多个 Watch。客户端跳过没有本机匹配成品的校验任务；刚登记成功但本机状态尚未完成时稍后重查。配套新版服务端收到单台客户端的不可用或清理回报后，保留原 30 秒校验窗口，其他客户端仍可提供摘要；到期无人响应才结束本地路径并按交付策略兜底。修复无需新增迁移，应先升级全部服务端实例，再升级客户端。
 

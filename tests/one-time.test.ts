@@ -181,16 +181,19 @@ test('空目录拒绝创建；含链接的目录不能授权整目录删除', as
   expect((await createOneTimeBatch(f.root.path, defaultOneTimeRetention())).files).toHaveLength(1)
 })
 
-test('损坏的清单或提前的删除时间不能通过重启验证', async () => {
+test('损坏的清单或提前的删除时间不能写入，重启保留有效清单', async () => {
   const f = await fixture(); f.complete(); f.manager.tick()
   const data = structuredClone(f.store.data)
+  const saved = readFileSync(f.store.path)
   for (const mutate of [
     () => { f.root.batch!.files = [join(f.temp, 'outside.mkv')] },
     () => { f.root.batch!.deleteAt = f.root.batch!.completedAt! + DAY },
     () => { f.root.batch!.entries![1].path = '../outside' },
   ]) {
-    Object.assign(f.root, structuredClone(data.watches[0])); mutate(); f.store.save()
-    expect(() => new WatchStore(f.store.path)).toThrow()
+    Object.assign(f.root, structuredClone(data.watches[0])); mutate()
+    expect(() => f.store.save()).toThrow()
+    expect(readFileSync(f.store.path)).toEqual(saved)
+    expect(new WatchStore(f.store.path).data.watches[0]).toEqual(data.watches[0])
   }
 })
 
@@ -259,14 +262,19 @@ test('文件清理中断后恢复只删除剩余已选文件', async () => {
   expect(existsSync(f.root.selectedFiles![1])).toBe(false); expect(existsSync(f.sidecar)).toBe(true)
 })
 
-test('拒绝空文件选择、非视频、临时文件、链接和跨目录；损坏清单不能扩大删除范围', async () => {
+test('拒绝空文件选择、非视频、临时文件、链接和跨目录', async () => {
   const f = await fixture(true, true), partial = join(f.root.path, 'Show.part.mkv'), empty = join(f.root.path, 'empty.mp4')
   const linked = join(f.root.path, 'link.mkv')
   await writeFile(partial, 'partial'); await writeFile(empty, ''); await symlink(f.file, linked)
   for (const files of [[], [f.sidecar], [partial], [empty], [linked], [f.file, join(f.temp, 'outside.mp4')]]) {
     await expect(createOneTimeBatch(f.root.path, f.root.cleanup!, files)).rejects.toThrow()
   }
+})
+
+test('所选文件清单损坏时不能写入或扩大删除范围', async () => {
+  const f = await fixture(true, true)
   const original = structuredClone(f.root)
+  const saved = readFileSync(f.store.path)
   for (const mutate of [
     () => { f.root.selectedFiles = [] },
     () => { f.root.batch!.files.push(join(f.root.path, 'outside.mkv')) },
@@ -274,7 +282,9 @@ test('拒绝空文件选择、非视频、临时文件、链接和跨目录；�
     () => { f.root.batch!.entries![0].path = ''; f.root.batch!.entries![0].kind = 'directory' },
     () => { delete f.root.selectedFiles },
   ]) {
-    Object.assign(f.root, structuredClone(original)); mutate(); f.store.save()
-    expect(() => new WatchStore(f.store.path)).toThrow()
+    Object.assign(f.root, structuredClone(original)); mutate()
+    expect(() => f.store.save()).toThrow()
+    expect(readFileSync(f.store.path)).toEqual(saved)
+    expect(new WatchStore(f.store.path).data.watches[0]).toEqual(original)
   }
 })

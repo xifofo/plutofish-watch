@@ -22,8 +22,12 @@ test('新安装和旧状态默认关闭，开关与时长独立保存并跨重�
     expect(new WatchStore(path).data.retention).toEqual({ enabled: true, minutes: 30 })
     migrated.data.retention = validateRetention({ enabled: false, minutes: 30 }); migrated.save()
     expect(new WatchStore(path).data.retention).toEqual({ enabled: false, minutes: 30 })
-    writeFileSync(path, JSON.stringify({ ...old, retention: { enabled: true, minutes: -1 } }))
-    expect(() => new WatchStore(path)).toThrow('保留时长')
+    const damaged = JSON.stringify({ ...old, retention: { enabled: true, minutes: -1 } })
+    writeFileSync(path, damaged)
+    const recovered = new WatchStore(path)
+    expect(recovered.data.retention).toEqual({ enabled: false, minutes: 30 })
+    expect(recovered.data.uploadsPaused).toBe(true)
+    expect(readFileSync(recovered.recovery!.preservedPath!, 'utf8')).toBe(damaged)
   } finally { rmSync(temp, { recursive: true, force: true }) }
 })
 
@@ -37,8 +41,12 @@ test('旧版按天保存的策略升级后换算为分钟，保存时不再写�
     expect(store.data.retention).toEqual({ enabled: true, minutes: 3 * DAY })
     store.save()
     expect(JSON.parse(readFileSync(path, 'utf8')).retention).toEqual({ enabled: true, minutes: 3 * DAY })
-    writeFileSync(path, JSON.stringify({ ...old, retention: { enabled: true, days: -1 } }))
-    expect(() => new WatchStore(path)).toThrow('保留时长')
+    const damaged = JSON.stringify({ ...old, retention: { enabled: true, days: -1 } })
+    writeFileSync(path, damaged)
+    const recovered = new WatchStore(path)
+    expect(recovered.data.retention).toEqual({ enabled: false, minutes: 3 * DAY })
+    expect(recovered.data.uploadsPaused).toBe(true)
+    expect(readFileSync(recovered.recovery!.preservedPath!, 'utf8')).toBe(damaged)
   } finally { rmSync(temp, { recursive: true, force: true }) }
 })
 

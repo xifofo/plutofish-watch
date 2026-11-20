@@ -172,8 +172,17 @@ else {
     else await currentWindow.loadFile(join(__dirname, '../renderer/index.html'))
     updater.start()
     await service.start()
+    if (service.store.recovery) {
+      const { backupPath, preservedPath } = service.store.recovery
+      void dialog.showMessageBox(currentWindow, {
+        type: 'warning', title: '监控记录已从备份恢复', message: '已恢复备份，目录监控、上传和自动清理均已暂停。',
+        detail: `请核对目录和任务后再恢复监控。备份可能不包含最后一次保存的更改。\n\n备份：${backupPath}${preservedPath ? `\n损坏原件：${preservedPath}` : ''}`,
+        buttons: ['知道了'],
+      })
+    }
   }).catch(error => {
-    dialog.showErrorBox('PlutoFish Watch 启动失败', error instanceof Error && /[\u4e00-\u9fff]/.test(error.message) ? error.message : '无法读取应用数据，请检查目录权限并保留原始数据后重试。')
+    const message = error instanceof Error && /[\u4e00-\u9fff]/.test(error.message) ? error.message : '无法读取应用数据，请检查目录权限并保留原始数据后重试。'
+    dialog.showErrorBox('PlutoFish Watch 启动失败', `${message}\n\n应用数据目录：${app.getPath('userData')}\n请勿删除此目录或用空记录覆盖，上传记录可能仍可用于恢复。`)
     quitting = true; app.quit()
   })
   app.on('activate', showWindow)

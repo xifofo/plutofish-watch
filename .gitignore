@@ -10,5 +10,6 @@ release/
 .local/
 output/
 watch-state.json
+watch-state.json.*
 connection.json
 publications/
