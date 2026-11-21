@@ -9,6 +9,9 @@ import { selectedVideoFiles, videoExtensions } from './files'
 import createEd2kWorker from './ed2k-worker?nodeWorker'
 import { createED2KComputer } from '../../vendor/publisher/src/integrations/plutofish/ed2k-computer'
 
+// Windows 常驻监控优先使用软件渲染，减少显卡驱动路径；不代表已经定位蓝屏根因。
+if (process.platform === 'win32') app.disableHardwareAcceleration()
+
 let window: BrowserWindow | undefined, tray: Tray | undefined, service: WatchService | undefined, updater: WatchUpdater | undefined
 let quitting = false, closing: Promise<void> | undefined
 let broadcastTimer: ReturnType<typeof setTimeout> | undefined

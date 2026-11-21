@@ -30,4 +30,4 @@ test('MP2（电视录制 TS）与 MP3 音轨按实测规格自动新建并匹配
     const existing = { id: 'r'.repeat(32), name: version.name, resolution: '1080p', dynamicRange: 'SDR', status: 'published' }
     expect(matchMeasuredRelease([existing], probed.media, file, preset).matchedId).toBe(existing.id)
   }
-})
+}, 20_000) // 包含两次真实编码和检测，允许 Windows 冷启动子进程。

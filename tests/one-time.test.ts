@@ -142,7 +142,7 @@ for (const kind of ['new', 'changed', 'missing', 'symlink', 'replaced'] as const
   if (kind === 'new') await writeFile(join(f.root.path, '.new'), 'keep')
   if (kind === 'changed') await appendFile(f.sidecar, 'new data')
   if (kind === 'missing') await rm(f.sidecar)
-  if (kind === 'symlink') await symlink(outside, join(f.root.path, 'linked'))
+  if (kind === 'symlink') await symlink(outside, join(f.root.path, 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
   if (kind === 'replaced') { await rename(f.root.path, join(f.temp, 'old')); await mkdir(f.root.path); await writeFile(join(f.root.path, 'keep'), 'replacement') }
   f.advance(4 * DAY); f.manager.tick()
   expect(f.root.batch!.deletedAt).toBeUndefined(); expect(f.root.batch!.cleanupError).toBeTruthy()
@@ -176,7 +176,7 @@ test('删除中断后只清理清单中剩余的原文件', async () => {
 test('空目录拒绝创建；含链接的目录不能授权整目录删除', async () => {
   const f = await fixture(false), empty = join(f.temp, 'empty'); await mkdir(empty)
   await expect(createOneTimeBatch(empty, defaultOneTimeRetention())).rejects.toThrow('没有可上传')
-  await symlink(empty, join(f.root.path, 'link'))
+  await symlink(empty, join(f.root.path, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
   await expect(createOneTimeBatch(f.root.path, { enabled: true, minutes: 4320 })).rejects.toThrow('链接')
   expect((await createOneTimeBatch(f.root.path, defaultOneTimeRetention())).files).toHaveLength(1)
 })
@@ -243,7 +243,7 @@ test('所选文件清理等待读取租约，到期只删已选文件，保留�
   expect(new WatchStore(f.store.path).data.watches[0].batch!.deletedAt).toBe(f.now())
 })
 
-for (const kind of ['changed', 'symlink', 'missing'] as const) test(`所选文件 ${kind} 时停止整批清理`, async () => {
+for (const kind of ['changed', 'symlink', 'missing'] as const) test.skipIf(process.platform === 'win32' && kind === 'symlink')(`所选文件 ${kind} 时停止整批清理`, async () => {
   const f = await fixture(true, true); f.complete(); f.manager.tick()
   const second = f.root.selectedFiles![1]
   if (kind === 'changed') await appendFile(second, 'changed')
@@ -265,7 +265,8 @@ test('文件清理中断后恢复只删除剩余已选文件', async () => {
 test('拒绝空文件选择、非视频、临时文件、链接和跨目录', async () => {
   const f = await fixture(true, true), partial = join(f.root.path, 'Show.part.mkv'), empty = join(f.root.path, 'empty.mp4')
   const linked = join(f.root.path, 'link.mkv')
-  await writeFile(partial, 'partial'); await writeFile(empty, ''); await symlink(f.file, linked)
+  await writeFile(partial, 'partial'); await writeFile(empty, '')
+  await symlink(process.platform === 'win32' ? f.root.path : f.file, linked, process.platform === 'win32' ? 'junction' : 'file')
   for (const files of [[], [f.sidecar], [partial], [empty], [linked], [f.file, join(f.temp, 'outside.mp4')]]) {
     await expect(createOneTimeBatch(f.root.path, f.root.cleanup!, files)).rejects.toThrow()
   }

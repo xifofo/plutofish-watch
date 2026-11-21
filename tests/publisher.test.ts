@@ -232,7 +232,7 @@ test('一次性混传两季、两种画质和制作组，各自登记版本且�
   const restored = new WatchStore(f.store.path)
   expect(restored.data.jobs.map(job => [job.seasonNumber, job.release?.key])).toEqual(
     f.store.data.jobs.map(job => [job.seasonNumber, job.release?.key]))
-})
+}, 20_000) // 多个真实媒体子进程在 Windows 上可能超过默认 5 秒。
 
 test('旧版排队文件已有跨季版本也先确认，不开始上传；已登记旧文件保留归属', async () => {
   const f = await setup()
@@ -378,7 +378,7 @@ test.each(['retained', 'removed', 'symlink'] as const)('第二个本地目录可
   f.store.data.retention = { enabled: true, minutes: 1440 }
   await until(f.publisher, () => f.job.status === 'completed' && f.job.synced === true && f.job.ed2kSaved === true)
   if (kind === 'removed') applyWatchEdit(f.store, f.root, { ...f.root, additionalPaths: [] })
-  if (kind === 'symlink') { await rename(original, original + '-moved'); await symlink(original + '-moved', original) }
+  if (kind === 'symlink') { await rename(original, original + '-moved'); await symlink(original + '-moved', original, process.platform === 'win32' ? 'junction' : 'dir') }
   now += 2 * 86400000; await f.publisher.tick()
   expect(existsSync(f.file)).toBe(kind !== 'retained')
   expect(f.job.retention?.state).toBe(kind === 'retained' ? 'deleted' : 'busy')
@@ -424,7 +424,7 @@ test.each(['directory', 'global', 'removed', 'changed', 'symlink'] as const)('�
   if (kind === 'global') f.store.data.uploadsPaused = true
   if (kind === 'removed') f.store.data.watches = []
   if (kind === 'changed') await appendFile(f.file, 'replacement')
-  if (kind === 'symlink') { const moved = join(f.temp, 'moved'); await rename(f.root.path, moved); await symlink(moved, f.root.path) }
+  if (kind === 'symlink') { const moved = join(f.temp, 'moved'); await rename(f.root.path, moved); await symlink(moved, f.root.path, process.platform === 'win32' ? 'junction' : 'dir') }
   now += 2 * 86400000; await f.publisher.tick()
   expect(existsSync(f.file)).toBe(true)
   expect(f.job.retention?.state).toBe(kind === 'changed' ? 'changed' : 'busy')

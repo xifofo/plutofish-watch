@@ -1,5 +1,5 @@
 /** 使用临时真实目录验证新增层级、稳定窗口、补扫、删除与重启，全部离线。 */
-import { afterEach, expect, test } from 'bun:test'
+import { afterEach, expect, spyOn, test } from 'bun:test'
 import { mkdtemp, mkdir, writeFile, realpath, rename, rm, symlink, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,12 +7,16 @@ import { WatchStore } from '../src/main/store'
 import { DirectoryWatcher } from '../src/main/watcher'
 import { episodeFromName, isVideoFile, seasonFromName, selectedVideoFiles } from '../src/main/files'
 import { applyWatchEdit } from '../src/main/watch-edit'
-import type { WatchRoot } from '../src/shared/model'
+import type { WatchJob, WatchRoot } from '../src/shared/model'
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
 
-export async function fixture(includeExisting = true) {
+export async function fixture(includeExisting = true, options: {
+  invalidated?: (job: WatchJob) => Promise<void>
+  timing?: { pollMs: number; eventMs: number; minGapMs: number }
+  changed?: () => void
+} = {}) {
   const temp = await realpath(await mkdtemp(join(tmpdir(), 'plutofish-watch-')))
   const rootPath = join(temp, 'media')
   await mkdir(rootPath)
@@ -27,7 +31,10 @@ export async function fixture(includeExisting = true) {
   store.data.watches.push(root)
   let now = Date.now()
   const cancelled: string[] = []
-  const watcher = new DirectoryWatcher(store, () => {}, async j => { cancelled.push(j.id) }, e => { throw e }, () => now)
+  const watcher = new DirectoryWatcher(store, options.changed ?? (() => {}), async j => {
+    cancelled.push(j.id)
+    await options.invalidated?.(j)
+  }, e => { throw e }, () => now, options.timing)
   cleanups.push(() => rm(temp, { recursive: true, force: true }))
   cleanups.push(() => watcher.close())
   return { temp, rootPath, root, store, watcher, cancelled, advance: (ms: number) => { now += ms } }
@@ -115,8 +122,7 @@ test('临时文件、隐藏目录及越界符号链接不被上传，集号不�
   await mkdir(join(f.rootPath, '.hidden'))
   await writeFile(join(f.rootPath, '.hidden', 'E03.mp4'), 'hidden')
   await writeFile(join(f.temp, 'E04.mp4'), 'outside')
-  await symlink(join(f.temp, 'E04.mp4'), join(f.rootPath, 'E04.mp4'))
-  await symlink(f.temp, join(f.rootPath, 'loop'))
+  await symlink(f.temp, join(f.rootPath, 'loop'), process.platform === 'win32' ? 'junction' : 'dir')
   await f.watcher.scan()
   f.advance(10001)
   await f.watcher.scan()
@@ -324,4 +330,116 @@ test('新增目录只初始化新路径，保留原目录队列和基线；暂�
   f.root.enabled = true; await f.watcher.scan(); f.advance(10001); await f.watcher.scan()
   expect(f.store.data.jobs.map(j => j.episodeNumber)).toEqual([2, 4])
   expect(await f.watcher.backfill(f.root.id)).toBe(2)
+})
+
+// Windows 非提权会话不能创建文件符号链接；目录 junction 的边界在上一个测试覆盖。
+test.skipIf(process.platform === 'win32')('越界文件符号链接不会被上传', async () => {
+  const f = await fixture()
+  await writeFile(join(f.temp, 'E04.mp4'), 'outside')
+  await symlink(join(f.temp, 'E04.mp4'), join(f.rootPath, 'E04.mp4'))
+  await f.watcher.scan()
+  expect(f.store.data.jobs).toHaveLength(0)
+})
+
+
+test('空闲补扫不重写状态或广播历史，稳定入队及错误恢复仍持久化', async () => {
+  let changed = 0
+  const f = await fixture(true, { changed: () => { changed++ } })
+  await writeFile(join(f.rootPath, 'E01.mp4'), 'content')
+  await f.watcher.scan()
+  const save = spyOn(f.store, 'save')
+  const original = await readFile(f.store.path, 'utf8')
+  changed = 0
+  for (let i = 0; i < 10; i++) { f.advance(100); await f.watcher.scan() }
+  expect(save).not.toHaveBeenCalled()
+  expect(changed).toBe(0)
+  expect(await readFile(f.store.path, 'utf8')).toBe(original)
+  f.advance(10001)
+  await f.watcher.scan()
+  expect(save).toHaveBeenCalledTimes(1)
+  expect(f.store.data.jobs[0].status).toBe('queued')
+  await rename(f.rootPath, f.rootPath + '-offline')
+  await f.watcher.scan()
+  await f.watcher.scan()
+  expect(save).toHaveBeenCalledTimes(2)
+  await rename(f.rootPath + '-offline', f.rootPath)
+  await f.watcher.scan()
+  expect(save).toHaveBeenCalledTimes(3)
+  expect(JSON.parse(await readFile(f.store.path, 'utf8')).watches[0].error).toBe('')
+})
+
+test('慢盘扫描合并重复请求，文件事件和其他目录的扫描也串行', async () => {
+  let enter!: () => void, release!: () => void
+  const entered = new Promise<void>(resolve => { enter = resolve })
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  const invalidated: string[] = []
+  const f = await fixture(true, { invalidated: async job => {
+    invalidated.push(job.watchId)
+    if (job.watchId === 'watch-1') { enter(); await blocked }
+  } })
+  // 清理先解除阻塞，再关闭监控。
+  cleanups.push(async () => { release() })
+  const secondPath = join(f.temp, 'other')
+  await mkdir(secondPath)
+  const second = { ...f.root, id: 'watch-2', path: secondPath }
+  f.store.data.watches.push(second)
+  await writeFile(join(f.rootPath, 'E01.mp4'), 'first')
+  await writeFile(join(secondPath, 'E01.mp4'), 'second')
+  await f.watcher.scan()
+  await writeFile(join(f.rootPath, 'E01.mp4'), 'first-replaced')
+  await writeFile(join(secondPath, 'E01.mp4'), 'second-replaced')
+  const pass = f.watcher.scan()
+  expect(f.watcher.scan()).toBe(pass)
+  const other = f.watcher.scanOne(second)
+  expect(f.watcher.scanOne(second)).toBe(other)
+  await entered
+  expect(invalidated).toEqual(['watch-1'])
+  release()
+  await Promise.all([pass, other])
+  expect(invalidated).toEqual(['watch-1', 'watch-2'])
+  expect(f.store.data.jobs).toHaveLength(4)
+})
+
+test('后台补扫从完成后计时，重复启动和退出不遗留扫描', async () => {
+  const f = await fixture(true, { timing: { pollMs: 40, eventMs: 5, minGapMs: 10 } })
+  const scan = spyOn(f.watcher, 'scan')
+  let release!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  cleanups.push(async () => { release() })
+  scan.mockImplementationOnce(() => blocked)
+  f.watcher.start(); f.watcher.start()
+  await new Promise(resolve => setTimeout(resolve, 120))
+  expect(scan).toHaveBeenCalledTimes(1)
+  release()
+  await new Promise(resolve => setTimeout(resolve, 100))
+  expect(scan.mock.calls.length).toBeGreaterThan(1)
+  await f.watcher.close()
+  const count = scan.mock.calls.length
+  f.watcher.start(); f.watcher.refresh()
+  await new Promise(resolve => setTimeout(resolve, 100))
+  expect(scan).toHaveBeenCalledTimes(count)
+})
+
+test('多目录部分失联和待确认集号保持空闲零写入，恢复后独立保存新基线', async () => {
+  const f = await fixture(), offline = join(f.temp, 'offline')
+  f.root.additionalPaths = [offline]
+  await writeFile(join(f.rootPath, 'Unknown.mp4'), 'review')
+  await f.watcher.scan()
+  f.advance(10001)
+  await f.watcher.scan()
+  expect(f.root.initialized).toBe(false)
+  expect(f.store.data.jobs[0].status).toBe('review')
+  const save = spyOn(f.store, 'save')
+  const backup = await readFile(f.store.path + '.bak', 'utf8')
+  f.advance(30_000)
+  await f.watcher.scan()
+  expect(save).not.toHaveBeenCalled()
+  expect(await readFile(f.store.path + '.bak', 'utf8')).toBe(backup)
+  await mkdir(offline)
+  await f.watcher.scan()
+  expect(save.mock.calls.length).toBeGreaterThan(0)
+  const restored = new WatchStore(f.store.path)
+  expect(restored.data.watches[0].initialized).toBe(true)
+  expect(restored.data.watches[0].error).toBe('')
+  expect(restored.data.watches[0].initializedPaths).toEqual([f.rootPath, offline])
 })

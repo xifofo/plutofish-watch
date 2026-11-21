@@ -23,7 +23,7 @@ test('空目录返回目录名作为识别来源；视频只传相对名称，�
   await writeFile(join(dir, 'empty.mkv'), '')
   await writeFile(join(dir, 'hidden.part.mp4'), 'partial')
   await mkdir(join(dir, '.hidden')); await writeFile(join(dir, '.hidden', 'skip.mp4'), 'data')
-  await symlink(join(dir, '.hidden', 'skip.mp4'), join(dir, 'link.mp4'))
+  await symlink(process.platform === 'win32' ? join(dir, '.hidden') : join(dir, '.hidden', 'skip.mp4'), join(dir, 'link.mp4'), process.platform === 'win32' ? 'junction' : 'file')
   expect((await recognitionSample(dir)).fileName).toBeNull()
   await mkdir(join(dir, 'Season 02')); await writeFile(join(dir, 'Season 02', 'Stars.S02E03.mkv'), 'data')
   const sample = await recognitionSample(dir)
