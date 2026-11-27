@@ -11,7 +11,21 @@ import { basename } from 'node:path'
 
 export const ED2K_CHUNK = 9728000
 
-/** 增量 MD4（RFC 1320）。Node/OpenSSL 3 默认不再提供 md4，这里自己实现。 */
+/** 增量 MD4 状态：原生 Hash 与下面的纯 TS 实现都满足。 */
+export interface Md4State { update(data: Uint8Array): unknown; digest(): Uint8Array }
+
+/**
+ * Bun 与 Electron（BoringSSL）自带原生 md4，实测比纯 TS 快约 6–10 倍；
+ * Node/OpenSSL 3 默认不提供 md4，此时退回纯 TS 实现。启动时用 RFC 1320 向量核对一次。
+ */
+export const md4Backend: 'native' | 'ts' = (() => {
+  try { return createHash('md4').update('abc').digest('hex') === 'a448017aaf21d8525fc10ae87aa6729d' ? 'native' : 'ts' }
+  catch { return 'ts' }
+})()
+
+export const newMd4 = (): Md4State => md4Backend === 'native' ? createHash('md4') : new Md4()
+
+/** 纯 TS 增量 MD4（RFC 1320），仅在运行时没有原生 md4 时使用。 */
 export class Md4 {
   private h = new Uint32Array([0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476])
   private buf = new Uint8Array(64)
@@ -76,14 +90,17 @@ export class Md4 {
 }
 
 export const hex = (b: Uint8Array) => Array.from(b, (v) => v.toString(16).padStart(2, '0')).join('')
-export const md4hex = (data: Uint8Array) => hex(new Md4().update(data).digest())
+export const md4hex = (data: Uint8Array) => { const h = newMd4(); h.update(data); return hex(h.digest()) }
 
 /** 流式 ed2k：喂任意大小的数据片段，内部按块切分 */
 export class Ed2kHasher {
-  private cur = new Md4()
+  private readonly make: () => Md4State
+  private cur: Md4State
   private curLen = 0
   private chunks: Uint8Array[] = []
   size = 0
+  /** `make` 只供测试对照两种实现；默认优先原生 md4。 */
+  constructor(make: () => Md4State = newMd4) { this.make = make; this.cur = make() }
   update(data: Uint8Array): this {
     let i = 0
     while (i < data.length) {
@@ -91,7 +108,7 @@ export class Ed2kHasher {
       this.cur.update(data.subarray(i, i + n))
       this.curLen += n
       i += n
-      if (this.curLen === ED2K_CHUNK) { this.chunks.push(this.cur.digest()); this.cur = new Md4(); this.curLen = 0 }
+      if (this.curLen === ED2K_CHUNK) { this.chunks.push(this.cur.digest()); this.cur = this.make(); this.curLen = 0 }
     }
     this.size += data.length
     return this
@@ -100,7 +117,7 @@ export class Ed2kHasher {
     // 剩余不足一块的尾巴；大小恰为整块时这里是空块的 MD4（eMule 约定）
     const tail = this.cur.digest()
     if (!this.chunks.length) return hex(tail)
-    const all = new Md4()
+    const all = this.make()
     for (const c of this.chunks) all.update(c)
     all.update(tail)
     return hex(all.digest())
